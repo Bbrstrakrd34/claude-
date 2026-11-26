@@ -2,13 +2,16 @@ import Foundation
 import Combine
 import HealthKit
 import WidgetKit
+import AVFoundation
 
-// MARK: - キャラの見た目・成長段階・スタイル
+// MARK: - ウィジェット用の絵文字の肌色
 
 enum SkinTone: String, CaseIterable, Identifiable, Codable {
     case light = "🏻", mediumLight = "🏼", medium = "🏽", mediumDark = "🏾", dark = "🏿"
     var id: String { rawValue }
 }
+
+// MARK: - 成長段階（年齢から決まる）
 
 enum Stage: Int, CaseIterable, Comparable {
     case baby, kid, teen, rookie, star
@@ -19,8 +22,15 @@ enum Stage: Int, CaseIterable, Comparable {
         ["赤ちゃん", "キッズ", "ティーン", "新人ラッパー", "スターラッパー"][rawValue]
     }
 
-    /// この段階になるのに必要な経験値（ステータス合計）
-    var requiredXP: Int { [0, 20, 60, 120, 250][rawValue] }
+    static func of(age: Int) -> Stage {
+        switch age {
+        case ..<3: return .baby
+        case 3..<13: return .kid
+        case 13..<18: return .teen
+        case 18..<22: return .rookie
+        default: return .star
+        }
+    }
 
     func emoji(_ tone: SkinTone) -> String {
         switch self {
@@ -96,7 +106,7 @@ enum Training: CaseIterable, Identifiable {
 struct SaveData: Codable {
     var created = false
     var name = ""
-    var tone: SkinTone = .medium
+    var appearance = Appearance()
     var stats = Stats()
     var points = 0
     var syncedDay = Date.distantPast
@@ -110,18 +120,23 @@ struct SaveData: Codable {
 final class GameState: ObservableObject {
     @Published var data: SaveData { didSet { save() } }
     @Published var message = "歩いてポイントを集めよう！"
+    @Published var speech: String?
+    @Published var voiceOn: Bool { didSet { UserDefaults.standard.set(voiceOn, forKey: voiceKey) } }
 
-    private let key = "rapper-save"
+    private let key = "rapper-save-v2"
     private let usedRhymesKey = "used-rhymes"
+    private let voiceKey = "voice-on"
     private let health = HKHealthStore()
+    private let synth = AVSpeechSynthesizer()
 
     init() {
-        if let raw = UserDefaults.standard.data(forKey: key),
+        if let raw = UserDefaults.standard.data(forKey: "rapper-save-v2"),
            let saved = try? JSONDecoder().decode(SaveData.self, from: raw) {
             data = saved
         } else {
             data = SaveData()
         }
+        voiceOn = UserDefaults.standard.object(forKey: "voice-on") as? Bool ?? true
         publishWidget()
     }
 
@@ -132,11 +147,15 @@ final class GameState: ObservableObject {
         publishWidget()
     }
 
-    var stage: Stage {
-        Stage.allCases.last { data.stats.total >= $0.requiredXP } ?? .baby
-    }
+    // MARK: 年齢と成長
 
-    var nextStage: Stage? { Stage(rawValue: stage.rawValue + 1) }
+    /// 各年齢になるのに必要な経験値（ステータス合計）。0歳〜30歳
+    static let ageXP: [Int] = (0...30).map { a in Int(0.4 * Double(a * a)) + 2 * a }
+
+    var age: Int { Self.ageXP.lastIndex(where: { data.stats.total >= $0 }) ?? 0 }
+    var currentAgeXP: Int { Self.ageXP[age] }
+    var nextAgeXP: Int? { age + 1 < Self.ageXP.count ? Self.ageXP[age + 1] : nil }
+    var stage: Stage { Stage.of(age: age) }
 
     /// 新人ラッパー以上になると、一番高い能力でスタイルが決まる
     var style: RapStyle? {
@@ -148,6 +167,28 @@ final class GameState: ObservableObject {
         return ranking.max { $0.0 < $1.0 }?.1
     }
 
+    private func celebrate(beforeAge: Int, beforeStage: Stage, otherwise: String) {
+        guard age > beforeAge else { message = otherwise; return }
+        message = stage != beforeStage
+            ? "🎉 \(stage.name)に成長した！（\(age)歳）"
+            : "🎂 \(age)歳になった！"
+        talk()
+    }
+
+    // MARK: 話しかける
+
+    func talk(_ text: String? = nil) {
+        let line = text ?? TalkLines.line(age: age)
+        speech = line
+        guard voiceOn else { return }
+        let u = AVSpeechUtterance(string: line)
+        u.voice = AVSpeechSynthesisVoice(language: "ja-JP")
+        u.pitchMultiplier = TalkLines.pitch(age: age)
+        u.rate = AVSpeechUtteranceDefaultSpeechRate
+        if synth.isSpeaking { synth.stopSpeaking(at: .immediate) }
+        synth.speak(u)
+    }
+
     // MARK: 練習
 
     func train(_ t: Training) {
@@ -157,17 +198,32 @@ final class GameState: ObservableObject {
         guard data.points >= t.cost else {
             message = "ポイントが足りない…歩こう！🚶"; return
         }
-        let before = stage
+        let beforeAge = age, beforeStage = stage
         var d = data
         d.points -= t.cost
         t.apply(&d.stats)
         data = d
-        message = stage != before ? "🎉 \(stage.name)に成長した！" : "\(t.title) 完了！"
+        celebrate(beforeAge: beforeAge, beforeStage: beforeStage, otherwise: "\(t.title) 完了！")
+    }
+
+    // MARK: リセット
+
+    /// キャラ作成画面に戻る。今日の歩数の同期記録だけは残す（もう一度ポイントをもらえないように）
+    func resetAll() {
+        synth.stopSpeaking(at: .immediate)
+        UserDefaults.standard.removeObject(forKey: usedRhymesKey)
+        var fresh = SaveData()
+        fresh.syncedDay = data.syncedDay
+        fresh.syncedSteps = data.syncedSteps
+        fresh.todaySteps = data.todaySteps
+        speech = nil
+        message = "歩いてポイントを集めよう！"
+        data = fresh
     }
 
     // MARK: 歩数
 
-    /// 今日の歩数を取得し、前回からの増えた分をポイントに変換する（100歩 = 1pt）
+    /// 今日の歩数を取得し、前回から増えた分をポイントに変換する（100歩 = 1pt）
     func syncSteps() async {
         guard HKHealthStore.isHealthDataAvailable() else {
             message = "この端末ではヘルスケアが使えません"; return
@@ -213,13 +269,13 @@ final class GameState: ObservableObject {
         used.append("\(prompt):\(answer)")
         UserDefaults.standard.set(used, forKey: usedRhymesKey)
 
-        let before = stage
+        let beforeAge = age, beforeStage = stage
         let gained = 3 + secondsLeft / 10
         var d = data
         d.points += gained
         d.stats.lyric += 2
         data = d
-        message = stage != before ? "🎉 \(stage.name)に成長した！" : "🎤 韻踏み成功！ +\(gained)pt"
+        celebrate(beforeAge: beforeAge, beforeStage: beforeStage, otherwise: "🎤 韻踏み成功！ +\(gained)pt")
         return gained
     }
 
@@ -230,16 +286,17 @@ final class GameState: ObservableObject {
         guard data.created else { return }
         let total = data.stats.total
         let progress: Double
-        if let next = nextStage {
-            let span = Double(next.requiredXP - stage.requiredXP)
-            progress = Double(total - stage.requiredXP) / span
+        if let next = nextAgeXP {
+            progress = Double(total - currentAgeXP) / Double(max(next - currentAgeXP, 1))
         } else {
             progress = 1
         }
+        let toneIndex = min(SkinTone.allCases.count - 1,
+                            data.appearance.skin * SkinTone.allCases.count / Palette.skins.count)
         SharedStore.save(WidgetSnapshot(
             name: data.name,
-            emoji: (style?.items ?? "") + stage.emoji(data.tone),
-            stageName: stage.name,
+            emoji: (style?.items ?? "") + stage.emoji(SkinTone.allCases[toneIndex]),
+            stageName: "\(age)歳・\(stage.name)",
             styleName: style?.rawValue,
             points: data.points,
             steps: data.todaySteps,
