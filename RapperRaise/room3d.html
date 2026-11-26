@@ -1976,6 +1976,321 @@ window.onload = function () {
         });
     }
 
+    // ===================================================================
+    // リアル寄りの人型アバター（肌・体格・髪型・服などを自由に変えられる）
+    // ===================================================================
+    const AGE = {
+        baby:  { leg: 0.30, torso: 0.30, headR: 0.135, thick: 1.25, shoulder: 0.11, neck: 0.025 },
+        kid:   { leg: 0.62, torso: 0.38, headR: 0.128, thick: 0.85, shoulder: 0.15, neck: 0.05 },
+        teen:  { leg: 0.84, torso: 0.47, headR: 0.123, thick: 0.92, shoulder: 0.18, neck: 0.07 },
+        adult: { leg: 0.90, torso: 0.50, headR: 0.121, thick: 1.00, shoulder: 0.20, neck: 0.08 }
+    };
+    const BUILD = {
+        slim:   { w: 0.85, l: 0.85 },
+        normal: { w: 1.00, l: 1.00 },
+        muscle: { w: 1.15, l: 1.22 },
+        chubby: { w: 1.30, l: 1.18 }
+    };
+    let eyeGroups = [];
+    let currentScale = 1;
+
+    function mat(color, opts) {
+        return new THREE.MeshStandardMaterial(Object.assign({ color: color, roughness: 0.7 }, opts || {}));
+    }
+    function add(geo, m, parent, x, y, z) {
+        const o = new THREE.Mesh(geo, m);
+        o.position.set(x || 0, y || 0, z || 0);
+        o.castShadow = true;
+        o.receiveShadow = true;
+        parent.add(o);
+        return o;
+    }
+
+    function buildHuman(look) {
+        while (avatarRig.children.length) avatarRig.remove(avatarRig.children[0]);
+        eyeGroups = [];
+        const stage = look.stage || 'adult';
+        const A = AGE[stage] || AGE.adult;
+        const B = BUILD[look.build] || BUILD.normal;
+        const isBaby = stage === 'baby';
+        const isKid = stage === 'kid';
+        const grown = stage === 'teen' || stage === 'adult';
+        const lt = A.thick * B.l;
+
+        const skin = mat(look.skin || '#d69a6b', { roughness: 0.52 });
+        const hairM = mat(look.hairColor || '#1e1a18', { roughness: 0.85 });
+        const hairSoft = mat(look.hairColor || '#1e1a18', { roughness: 0.9, transparent: true, opacity: 0.55 });
+        const hairBack = mat(look.hairColor || '#1e1a18', { roughness: 0.85, side: THREE.DoubleSide });
+        const topM = mat(look.topColor || '#d7263d', { roughness: 0.88 });
+        const topDark = topM.clone(); topDark.color.multiplyScalar(0.65);
+        const pantsM = mat('#2b3a55', { roughness: 0.92 });
+        const diaperM = mat('#f4f4f4', { roughness: 0.9 });
+        const shoeM = mat('#f2f2f2', { roughness: 0.45 });
+        const soleM = mat('#1f1f1f', { roughness: 0.6 });
+        const lipM = mat('#a85a52', { roughness: 0.45 });
+        const whiteM = mat('#f7f7f5', { roughness: 0.2 });
+        const irisM = mat('#3a2414', { roughness: 0.1 });
+        const pupilM = mat('#050505', { roughness: 0.05 });
+        const hatM = mat(look.hatColor || '#1c1c1e', { roughness: 0.8 });
+        const hatDark = hatM.clone(); hatDark.color.multiplyScalar(0.7);
+        const metal = mat(look.chain === 'silver' ? '#d0d4da' : '#f4c430', { metalness: 1, roughness: 0.28 });
+        const blackM = mat('#111111', { metalness: 0.5, roughness: 0.2 });
+        const cheekM = mat('#ff8a8a', { transparent: true, opacity: 0.18, roughness: 0.6 });
+
+        const hipY = A.leg + 0.02;
+        const T = A.torso;
+        const torsoBase = hipY - 0.04;
+        const sleeveLong = look.top === 'hoodie' || look.top === 'jacket';
+        const sleeveless = look.top === 'jersey';
+        const limbs = {};
+
+        // ---- 脚 ----
+        [-1, 1].forEach(side => {
+            const pivot = new THREE.Group();
+            pivot.position.set(side * 0.085 * B.w * (isBaby ? 1.1 : 1), hipY, 0);
+            avatarRig.add(pivot);
+            const thighL = A.leg * 0.5, shinL = A.leg * 0.47;
+            const legM = isBaby ? skin : pantsM;
+            add(new THREE.CylinderGeometry(0.068 * lt, 0.055 * lt, thighL, 16), legM, pivot, 0, -thighL / 2, 0);
+            add(new THREE.SphereGeometry(0.055 * lt, 14, 10), legM, pivot, 0, -thighL, 0);
+            add(new THREE.CylinderGeometry(0.053 * lt, 0.042 * lt, shinL, 16), legM, pivot, 0, -thighL - shinL / 2, 0);
+            const footY = -A.leg + 0.035;
+            if (isBaby) {
+                const foot = add(new THREE.SphereGeometry(0.045, 14, 10), skin, pivot, 0, footY, 0.03);
+                foot.scale.set(1, 0.6, 1.5);
+            } else {
+                add(new THREE.BoxGeometry(0.1 * Math.min(lt, 1.2), 0.065, 0.23), shoeM, pivot, 0, footY, 0.04);
+                add(new THREE.BoxGeometry(0.106 * Math.min(lt, 1.2), 0.022, 0.24), soleM, pivot, 0, footY - 0.04, 0.04);
+            }
+            limbs[side < 0 ? 'leftLegPivot' : 'rightLegPivot'] = pivot;
+        });
+
+        // ---- 胴体（肩・腰のくびれのある形）----
+        const profile = [[0.13, 0], [0.15, 0.06], [0.135, 0.3], [0.145, 0.55], [0.175, 0.78], [0.18, 0.88], [0.14, 0.95], [0.06, 1.0]]
+            .map(p => new THREE.Vector2(p[0], p[1] * T));
+        const torso = add(new THREE.LatheGeometry(profile, 32), look.top === 'jacket' ? topDark : topM, avatarRig, 0, torsoBase, 0);
+        torso.scale.set(B.w * (isBaby ? 1.15 : 1), 1, 0.72 * (look.build === 'chubby' ? 1.2 : 1));
+
+        // 腰まわり（ズボン／おむつ）
+        const hips = add(new THREE.CylinderGeometry(0.152, 0.142, 0.15, 28), isBaby ? diaperM : pantsM, avatarRig, 0, hipY + 0.01, 0);
+        hips.scale.set(B.w * (isBaby ? 1.2 : 1), 1, 0.74 * (look.build === 'chubby' ? 1.2 : 1));
+
+        if (look.build === 'chubby' || isBaby) {
+            const belly = add(new THREE.SphereGeometry(0.14, 24, 18), topM, avatarRig, 0, torsoBase + T * 0.38, 0.045);
+            belly.scale.set(1.05 * B.w, 1, 0.8);
+        }
+        if (look.build === 'muscle' && grown) {
+            [-1, 1].forEach(side => {
+                const pec = add(new THREE.SphereGeometry(0.075, 18, 14), topM, avatarRig, side * 0.07, torsoBase + T * 0.76, 0.095);
+                pec.scale.set(1.15, 0.8, 0.6);
+            });
+        }
+        if (look.top === 'jacket') {
+            add(new THREE.BoxGeometry(0.09, T * 0.62, 0.02), whiteM, avatarRig, 0, torsoBase + T * 0.6, 0.11 * (look.build === 'chubby' ? 1.2 : 1));
+        }
+        if (look.top === 'hoodie') {
+            const hood = add(new THREE.TorusGeometry(0.095, 0.038, 12, 24), topM, avatarRig, 0, torsoBase + T * 0.97, -0.035);
+            hood.rotation.x = Math.PI / 2.3;
+            [-1, 1].forEach(side => add(new THREE.CylinderGeometry(0.004, 0.004, T * 0.3, 6), whiteM, avatarRig, side * 0.03, torsoBase + T * 0.78, 0.13));
+        }
+
+        // ---- 首 ----
+        add(new THREE.CylinderGeometry(0.048, 0.055, A.neck + 0.06, 16), skin, avatarRig, 0, torsoBase + T + A.neck / 2 - 0.01, 0);
+
+        // ---- 腕 ----
+        const shoulderY = torsoBase + T * 0.88;
+        [-1, 1].forEach(side => {
+            const pivot = new THREE.Group();
+            pivot.position.set(side * (A.shoulder * B.w * 0.86 + 0.028 * lt), shoulderY, 0);
+            avatarRig.add(pivot);
+            const upL = T * 0.62, foreL = T * 0.56;
+            const upM = sleeveless ? skin : topM;
+            const foreM = sleeveLong ? topM : skin;
+            add(new THREE.SphereGeometry(0.05 * lt, 14, 10), upM, pivot, 0, 0, 0);
+            add(new THREE.CylinderGeometry(0.052 * lt, 0.044 * lt, upL, 14), upM, pivot, 0, -upL / 2, 0);
+            add(new THREE.SphereGeometry(0.044 * lt, 14, 10), foreM, pivot, 0, -upL, 0);
+            add(new THREE.CylinderGeometry(0.042 * lt, 0.034 * lt, foreL, 14), foreM, pivot, 0, -upL - foreL / 2, 0);
+            const hand = add(new THREE.SphereGeometry(0.04 * Math.min(lt, 1.15), 14, 10), skin, pivot, 0, -upL - foreL - 0.03, 0.005);
+            hand.scale.set(0.8, 1.2, 0.55);
+            limbs[side < 0 ? 'leftArmPivot' : 'rightArmPivot'] = pivot;
+        });
+
+        // ---- 頭 ----
+        const R = A.headR;
+        const headY = torsoBase + T + A.neck + R * 1.05;
+        const headGroup = new THREE.Group();
+        headGroup.position.y = headY;
+        avatarRig.add(headGroup);
+        const skull = new THREE.Group();
+        skull.scale.set(0.9, 1.08, 0.98);
+        headGroup.add(skull);
+        add(new THREE.SphereGeometry(R, 40, 28), skin, skull);
+        if (!isBaby) {
+            const jaw = add(new THREE.SphereGeometry(R * 0.8, 28, 18), skin, skull, 0, -R * 0.36, R * 0.1);
+            jaw.scale.set(grown ? 0.95 : 0.9, 0.78, 0.9);
+        }
+        if (isBaby || isKid) {
+            [-1, 1].forEach(side => {
+                const ch = add(new THREE.SphereGeometry(R * 0.3, 16, 12), skin, skull, side * R * 0.52, -R * 0.28, R * 0.62);
+                ch.scale.set(1, 0.85, 0.8);
+                add(new THREE.SphereGeometry(R * 0.22, 14, 10), cheekM, skull, side * R * 0.55, -R * 0.22, R * 0.78);
+            });
+        }
+        // 耳
+        [-1, 1].forEach(side => {
+            const ear = add(new THREE.SphereGeometry(R * 0.25, 16, 12), skin, skull, side * R * 0.95, -R * 0.05, -R * 0.02);
+            ear.scale.set(0.42, 1, 0.75);
+            if (look.earring && side < 0) add(new THREE.SphereGeometry(R * 0.06, 10, 8), metal, skull, side * R * 1.0, -R * 0.3, 0);
+        });
+        // 鼻
+        const nose = add(new THREE.SphereGeometry(R * (isBaby ? 0.13 : 0.16), 16, 12), skin, skull, 0, -R * 0.12, R * 0.97);
+        nose.scale.set(0.75, isBaby ? 0.8 : 1.05, 0.9);
+        // 目
+        const eyeS = isBaby ? 1.18 : (isKid ? 1.1 : 1);
+        [-1, 1].forEach(side => {
+            const eg = new THREE.Group();
+            eg.position.set(side * R * 0.36, R * 0.08, R * 0.82);
+            skull.add(eg);
+            add(new THREE.SphereGeometry(R * 0.15 * eyeS, 18, 14), whiteM, eg);
+            const iris = add(new THREE.SphereGeometry(R * 0.098 * eyeS, 16, 12), irisM, eg, 0, 0, R * 0.075 * eyeS);
+            iris.scale.set(1, 1, 0.6);
+            add(new THREE.SphereGeometry(R * 0.05 * eyeS, 12, 10), pupilM, eg, 0, 0, R * 0.12 * eyeS);
+            add(new THREE.SphereGeometry(R * 0.018 * eyeS, 8, 6), new THREE.MeshBasicMaterial({ color: 0xffffff }), eg, R * 0.03, R * 0.03, R * 0.15 * eyeS);
+            // まぶた（上半分を肌でおおう）
+            const lid = add(new THREE.SphereGeometry(R * 0.158 * eyeS, 18, 10, 0, Math.PI * 2, 0, Math.PI * (look.eyes === 'sleepy' ? 0.5 : 0.36)), skin, eg);
+            lid.rotation.x = -0.2;
+            eyeGroups.push(eg);
+            // まゆげ
+            const browH = look.brows === 'thick' ? 0.1 : (look.brows === 'angry' ? 0.075 : 0.05);
+            const brow = add(new THREE.BoxGeometry(R * 0.34, R * browH, R * 0.06), isBaby ? skin : hairM, skull, side * R * 0.37, R * 0.32, R * 0.9);
+            brow.rotation.z = look.brows === 'angry' ? -side * 0.3 : side * 0.06;
+            if (look.eyes === 'sharp') eg.rotation.z = -side * 0.12;
+        });
+        // 口
+        const mouthY = -R * (isBaby ? 0.4 : 0.42);
+        if (look.mouth === 'smile' || look.mouth === 'grin') {
+            const arc = add(new THREE.TorusGeometry(R * (look.mouth === 'grin' ? 0.24 : 0.19), R * 0.032, 8, 20, Math.PI * 0.8), lipM, skull, 0, mouthY + R * 0.1, R * 0.86);
+            arc.rotation.z = Math.PI * 1.1;
+            if (look.mouth === 'grin') add(new THREE.BoxGeometry(R * 0.3, R * 0.07, R * 0.03), whiteM, skull, 0, mouthY - R * 0.03, R * 0.9);
+        } else {
+            const lip = add(new THREE.BoxGeometry(R * (isBaby ? 0.2 : 0.34), R * 0.05, R * 0.05), lipM, skull, look.mouth === 'smirk' ? R * 0.05 : 0, mouthY, R * 0.9);
+            if (look.mouth === 'smirk') lip.rotation.z = 0.18;
+        }
+
+        // ---- 髪 ----
+        function cap(r, theta, m, tilt) {
+            const o = add(new THREE.SphereGeometry(r, 36, 18, 0, Math.PI * 2, 0, theta), m, skull);
+            o.rotation.x = tilt === undefined ? -0.35 : tilt;
+            return o;
+        }
+        const hs = look.hairStyle || 'short';
+        if (isBaby) {
+            if (hs !== 'bald') {
+                cap(R * 1.015, Math.PI * 0.33, hairSoft);
+                const tuft = add(new THREE.ConeGeometry(R * 0.07, R * 0.3, 8), hairM, skull, 0, R * 1.08, 0);
+                tuft.rotation.z = 0.3;
+            }
+        } else if (hs === 'buzz') {
+            cap(R * 1.012, Math.PI * 0.43, hairSoft);
+        } else if (hs === 'short') {
+            cap(R * 1.05, Math.PI * 0.45, hairM);
+            const fringe = add(new THREE.SphereGeometry(R * 0.5, 20, 14), hairM, skull, R * 0.15, R * 0.68, R * 0.55);
+            fringe.scale.set(1.3, 0.42, 0.8);
+        } else if (hs === 'afro') {
+            add(new THREE.SphereGeometry(R * 1.55, 32, 24), hairM, skull, 0, R * 0.38, -R * 0.2);
+        } else if (hs === 'long') {
+            cap(R * 1.05, Math.PI * 0.5, hairM);
+            add(new THREE.CylinderGeometry(R * 1.03, R * 1.22, R * 2.4, 28, 1, true, Math.PI / 2, Math.PI), hairBack, skull, 0, -R * 0.75, -R * 0.05);
+        } else if (hs === 'braids') {
+            cap(R * 1.03, Math.PI * 0.47, hairM);
+            for (let i = 0; i < 11; i++) {
+                const phi = Math.PI * (i / 10);
+                add(new THREE.CylinderGeometry(R * 0.065, R * 0.05, R * 2.1, 8), hairM, skull,
+                    -Math.cos(phi) * R * 0.98, -R * 0.55, -Math.sin(phi) * R * 0.9);
+            }
+        } else if (hs === 'mohawk') {
+            cap(R * 1.008, Math.PI * 0.4, hairSoft);
+            for (let i = 0; i < 7; i++) {
+                const t = -0.7 + i * 0.27;
+                const fin = add(new THREE.BoxGeometry(R * 0.14, R * 0.42, R * 0.3), hairM, skull, 0, Math.cos(t) * R * 1.05, Math.sin(t) * R * 1.05);
+                fin.rotation.x = t;
+            }
+        }
+
+        // ---- ひげ ----
+        if (grown && look.beard && look.beard !== 'none') {
+            if (look.beard === 'goatee') {
+                const g = add(new THREE.SphereGeometry(R * 0.2, 16, 12), hairM, skull, 0, -R * 0.66, R * 0.8);
+                g.scale.set(1, 1.15, 0.6);
+                add(new THREE.BoxGeometry(R * 0.42, R * 0.07, R * 0.08), hairM, skull, 0, -R * 0.3, R * 0.93);
+            } else {
+                const bm = look.beard === 'stubble' ? hairSoft : hairM;
+                const beard = add(new THREE.SphereGeometry(R * 1.04, 32, 14, 0, Math.PI, Math.PI * 0.55, Math.PI * 0.38), bm, skull, 0, -R * 0.05, 0);
+                beard.material = bm.clone();
+                beard.material.side = THREE.DoubleSide;
+            }
+        }
+
+        // ---- 帽子 ----
+        if (look.hat === 'cap') {
+            cap(R * 1.1, Math.PI * 0.42, hatM, -0.15);
+            const brim = add(new THREE.CylinderGeometry(R * 0.78, R * 0.78, R * 0.05, 28, 1, false, -Math.PI / 2, Math.PI), hatDark, skull, 0, R * 0.42, R * 0.55);
+            brim.rotation.x = 0.18;
+        } else if (look.hat === 'beanie') {
+            const b = cap(R * 1.1, Math.PI * 0.48, hatM, -0.2);
+            b.scale.y = 1.12;
+            const band = add(new THREE.TorusGeometry(R * 1.02, R * 0.1, 10, 36), hatDark, skull, 0, R * 0.12, -R * 0.05);
+            band.rotation.x = Math.PI / 2 + 0.2;
+        } else if (look.hat === 'bucket') {
+            add(new THREE.CylinderGeometry(R * 0.85, R * 1.0, R * 0.6, 28), hatM, skull, 0, R * 0.78, 0);
+            add(new THREE.CylinderGeometry(R * 1.45, R * 1.45, R * 0.05, 36), hatDark, skull, 0, R * 0.47, 0);
+        }
+
+        // ---- メガネ ----
+        if (look.glasses === 'round') {
+            [-1, 1].forEach(side => add(new THREE.TorusGeometry(R * 0.18, R * 0.016, 8, 24), blackM, skull, side * R * 0.36, R * 0.08, R * 0.99));
+            add(new THREE.CylinderGeometry(R * 0.012, R * 0.012, R * 0.36, 6), blackM, skull, 0, R * 0.1, R * 1.0).rotation.z = Math.PI / 2;
+        } else if (look.glasses === 'shades') {
+            [-1, 1].forEach(side => add(new THREE.BoxGeometry(R * 0.36, R * 0.22, R * 0.03), blackM, skull, side * R * 0.37, R * 0.08, R * 0.98));
+            add(new THREE.BoxGeometry(R * 0.4, R * 0.04, R * 0.03), blackM, skull, 0, R * 0.14, R * 0.99);
+        }
+
+        // ---- チェーン ----
+        if (look.chain && look.chain !== 'none' && !isBaby) {
+            const chain = add(new THREE.TorusGeometry(0.085 * B.w, 0.007, 8, 40), metal, avatarRig, 0, torsoBase + T * 0.93, 0.035);
+            chain.rotation.x = Math.PI / 2 - 0.45;
+            add(new THREE.SphereGeometry(0.02, 12, 10), metal, avatarRig, 0, torsoBase + T * 0.83, 0.12);
+        }
+
+        avatarRig.userData.limbs = limbs;
+        avatarRig.userData.headGroup = headGroup;
+        avatarRig.userData.hipY = hipY;
+        avatarRig.userData.headTop = headY + R * 1.15;
+    }
+
+    // まばたき
+    setInterval(() => {
+        eyeGroups.forEach(e => { e.scale.y = 0.12; });
+        setTimeout(() => eyeGroups.forEach(e => { e.scale.y = 1; }), 130);
+    }, 3800);
+
+    // ふきだしをアバターの身長に合わせる
+    projectHeadToScreen = function () {
+        const top = (avatarRig.userData.headTop || 1.5) * currentScale + 0.15;
+        const p = new THREE.Vector3(avatarRig.position.x, avatarRig.position.y + top, avatarRig.position.z);
+        p.project(camera);
+        return { x: (p.x * 0.5 + 0.5) * window.innerWidth, y: (-p.y * 0.5 + 0.5) * window.innerHeight };
+    };
+
+    // 座ったときの高さを、脚の長さに合わせる
+    const originalTrigger = triggerAction;
+    triggerAction = function (type) {
+        originalTrigger(type);
+        if (type === 'sit' && avatarRig.userData.hipY) {
+            avatar.seatY += 0.52 - avatarRig.userData.hipY * currentScale;
+        }
+    };
+
     function currentLayout() {
         return JSON.stringify(state.furnitures.map(f => ({
             id: f.catalogId, gx: f.gx, gy: f.gy, r: f.rotation
@@ -1994,21 +2309,26 @@ window.onload = function () {
             if (typeof updateLightButtonsUI === 'function') updateLightButtonsUI();
         },
         setLook(look) {
-            tagMaterials();
-            roles.forEach((v, mat) => {
-                if (v.role === 'skin' && look.skin) mat.color.set(look.skin);
-                if (v.role === 'hair' && look.hair) {
-                    mat.color.set(look.hair);
-                    v.mesh.visible = !look.bald;
-                }
-                if (v.role === 'top' && look.top) mat.color.set(look.top);
-                if (v.role === 'vest' && look.top) {
-                    mat.color.set(look.top);
-                    mat.color.multiplyScalar(0.6);
-                }
-                if (v.role === 'pants' && look.pants) mat.color.set(look.pants);
-            });
-            if (look.scale) avatarRig.scale.setScalar(look.scale);
+            buildHuman(look);
+            currentScale = look.scale || 1;
+            avatarRig.scale.setScalar(currentScale);
+        },
+        // キャラを正面から大きく映す（着せ替え用）
+        setPortrait(on) {
+            wanderOn = !on;
+            if (!on) { setCameraPreset('iso'); return; }
+            avatar.path = [];
+            avatar.action = 'idle';
+            avatar.seatY = 0;
+            const yaw = Math.PI * 0.25;
+            avatar.rotY = yaw;
+            const h = (avatarRig.userData.headTop || 1.5) * currentScale;
+            camControl.desiredYaw = yaw;
+            camControl.desiredPitch = 0.08;
+            camControl.desiredDistance = Math.max(1.3, h * 1.55);
+            const w = gridToWorld(avatar.visualX, avatar.visualY, 1, 1);
+            camControl.desiredTarget.set(w.x, h * 0.6, w.z);
+            state.cameraPreset = 'portrait';
         },
         setLayout(list) {
             if (!Array.isArray(list)) return;

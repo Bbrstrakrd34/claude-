@@ -6,20 +6,32 @@ struct CreateView: View {
     @EnvironmentObject var game: GameState
     @State private var name = ""
     @State private var look = Appearance.random()
+    @State private var previewAdult = false
 
     var body: some View {
         ScrollView {
             VStack(spacing: 18) {
                 Text("赤ちゃんが生まれた！").font(.title.bold())
-                HStack(alignment: .bottom, spacing: 8) {
-                    VStack {
-                        AvatarView(look: look, stage: .baby, size: 130)
-                        Text("いま").font(.caption)
+                if Room3DView.isAvailable {
+                    Picker("プレビュー", selection: $previewAdult) {
+                        Text("いま（赤ちゃん）").tag(false)
+                        Text("大人になると…").tag(true)
                     }
-                    Image(systemName: "arrow.right").foregroundStyle(.secondary)
-                    VStack {
-                        AvatarView(look: look, stage: .star, size: 130)
-                        Text("大人になると…").font(.caption)
+                    .pickerStyle(.segmented)
+                    Room3DView(lookOverride: look, stageOverride: previewAdult ? .star : .baby, portrait: true)
+                        .frame(height: 320)
+                        .clipShape(RoundedRectangle(cornerRadius: 20))
+                } else {
+                    HStack(alignment: .bottom, spacing: 8) {
+                        VStack {
+                            AvatarView(look: look, stage: .baby, size: 130)
+                            Text("いま").font(.caption)
+                        }
+                        Image(systemName: "arrow.right").foregroundStyle(.secondary)
+                        VStack {
+                            AvatarView(look: look, stage: .star, size: 130)
+                            Text("大人になると…").font(.caption)
+                        }
                     }
                 }
                 TextField("名前をつけてね", text: $name)
@@ -53,7 +65,13 @@ struct ClosetView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
-                    AvatarView(look: draft, stage: game.stage, size: 200)
+                    if Room3DView.isAvailable {
+                        Room3DView(lookOverride: draft, portrait: true)
+                            .frame(height: 320)
+                            .clipShape(RoundedRectangle(cornerRadius: 20))
+                    } else {
+                        AvatarView(look: draft, stage: game.stage, size: 200)
+                    }
                     AppearanceEditor(look: $draft)
                 }
                 .padding()

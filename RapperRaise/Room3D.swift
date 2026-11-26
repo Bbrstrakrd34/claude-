@@ -7,6 +7,11 @@ struct Room3DView: UIViewRepresentable {
     @EnvironmentObject var game: GameState
     /// true: メイン画面用（ボタン類を隠す） / false: 全画面の模様替え用
     var compact = true
+    /// 着せ替え画面などで、保存前の見た目を映したいとき
+    var lookOverride: Appearance? = nil
+    var stageOverride: Stage? = nil
+    /// true: キャラを正面から大きく映す
+    var portrait = false
 
     /// room3d.html がアプリに入っているか
     static var isAvailable: Bool {
@@ -55,7 +60,9 @@ struct Room3DView: UIViewRepresentable {
         if look != c.lastLook {
             c.lastLook = look
             c.run("app.setLook(\(look))")
+            if portrait { c.run("app.setPortrait(true)") }
         }
+        if portrait { return }
 
         // セリフ
         if game.speech != c.lastSpeech {
@@ -93,28 +100,52 @@ struct Room3DView: UIViewRepresentable {
     }
 
     private struct JSLook: Encodable {
+        let stage: String
         let skin: String
-        let hair: String
+        let hairStyle: String
+        let hairColor: String
         let top: String
+        let topColor: String
+        let build: String
+        let eyes: String
+        let brows: String
+        let mouth: String
+        let beard: String
+        let hat: String
+        let hatColor: String
+        let glasses: String
+        let chain: String
+        let earring: Bool
         let scale: Double
-        let bald: Bool
     }
 
     private func lookJSON() -> String {
-        let a = game.data.appearance
-        let stageScale: Double
-        switch game.stage {
-        case .baby: stageScale = 0.55
-        case .kid: stageScale = 0.75
-        case .teen: stageScale = 0.92
-        case .rookie, .star: stageScale = 1
+        let a = lookOverride ?? game.data.appearance
+        let stageName: String
+        switch stageOverride ?? game.stage {
+        case .baby: stageName = "baby"
+        case .kid: stageName = "kid"
+        case .teen: stageName = "teen"
+        case .rookie, .star: stageName = "adult"
         }
         let look = JSLook(
+            stage: stageName,
             skin: Self.hex(Palette.skins[a.skin]),
-            hair: Self.hex(Palette.hair[a.hairColor]),
-            top: Self.hex(Palette.cloth[a.topColor]),
-            scale: stageScale * Double(a.height.scale),
-            bald: a.hair == .bald
+            hairStyle: a.hair.rawValue,
+            hairColor: Self.hex(Palette.hair[a.hairColor]),
+            top: a.top.rawValue,
+            topColor: Self.hex(Palette.cloth[a.topColor]),
+            build: a.build.rawValue,
+            eyes: a.eyes.rawValue,
+            brows: a.brows.rawValue,
+            mouth: a.mouth.rawValue,
+            beard: a.beard.rawValue,
+            hat: a.hat.rawValue,
+            hatColor: Self.hex(Palette.cloth[a.hatColor]),
+            glasses: a.glasses.rawValue,
+            chain: a.chain.rawValue,
+            earring: a.earring,
+            scale: Double(a.height.scale)
         )
         guard let data = try? JSONEncoder().encode(look) else { return "{}" }
         return String(data: data, encoding: .utf8) ?? "{}"
