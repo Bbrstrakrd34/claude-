@@ -20,6 +20,10 @@ struct ContentView: View {
     @State private var showCloset = false
     @State private var showStatus = false
     @State private var editing = false
+    @State private var selectedFurniture: String? = "sofa_ivory"
+    @State private var deleteMode = false
+    @State private var rotateCount = 0
+    @State private var resetCount = 0
     @State private var confirmReset = false
     @State private var toast: String?
 
@@ -27,7 +31,11 @@ struct ContentView: View {
         ZStack {
             // 部屋
             if Room3DView.isAvailable {
-                Room3DView(editing: editing)
+                Room3DView(editing: editing,
+                           selectedFurniture: selectedFurniture,
+                           deleteMode: deleteMode,
+                           rotateCount: rotateCount,
+                           resetCount: resetCount)
                     .ignoresSafeArea()
             } else {
                 Color.white.ignoresSafeArea()
@@ -40,7 +48,10 @@ struct ContentView: View {
                     statusCard
                     Spacer()
                     if editing {
-                        Button("完了") { editing = false }
+                        Button("完了") {
+                            editing = false
+                            deleteMode = false
+                        }
                             .font(.headline)
                             .padding(.horizontal, 16)
                             .frame(height: 48)
@@ -65,6 +76,7 @@ struct ContentView: View {
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
                 Spacer()
+                if editing { editPanel }
             }
             .padding(.horizontal, 16)
             .padding(.top, 8)
@@ -101,6 +113,49 @@ struct ContentView: View {
         } message: {
             Text("育てたキャラ・ポイント・部屋・使った韻の記録がすべて消えます。")
         }
+    }
+
+    /// 模様替え中に下に出す操作パネル
+    private var editPanel: some View {
+        VStack(spacing: 10) {
+            Text(deleteMode ? "撤去したい家具をタップ" : "置きたい場所の床をタップ（2本指で拡大）")
+                .font(.caption.bold())
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(FurnitureChoice.all) { item in
+                        let active = !deleteMode && selectedFurniture == item.id
+                        Button {
+                            deleteMode = false
+                            selectedFurniture = item.id
+                        } label: {
+                            VStack(spacing: 2) {
+                                Text(item.emoji).font(.title2)
+                                Text(item.name).font(.caption2.bold())
+                                Text(item.size).font(.system(size: 9)).foregroundStyle(.secondary)
+                            }
+                            .frame(width: 74, height: 70)
+                            .background(active ? Color.orange.opacity(0.3) : Color.white.opacity(0.5),
+                                        in: RoundedRectangle(cornerRadius: 12))
+                            .overlay(RoundedRectangle(cornerRadius: 12)
+                                .stroke(active ? Color.orange : Color.clear, lineWidth: 2))
+                        }
+                        .foregroundStyle(.primary)
+                    }
+                }
+            }
+            HStack(spacing: 10) {
+                Button("↻ 回転") { rotateCount += 1 }
+                    .buttonStyle(.bordered)
+                Button(deleteMode ? "🗑 撤去中" : "🗑 撤去") { deleteMode.toggle() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(deleteMode ? .red : .gray)
+                Button("初期配置") { resetCount += 1 }
+                    .buttonStyle(.bordered)
+            }
+        }
+        .padding(12)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
+        .padding(.bottom, 8)
     }
 
     /// 左上の小さなステータス

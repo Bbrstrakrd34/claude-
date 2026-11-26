@@ -12,8 +12,13 @@ struct Room3DView: UIViewRepresentable {
     var stageOverride: Stage? = nil
     /// true: キャラを正面から大きく映す
     var portrait = false
-    /// true: 模様替え中（家具の一覧を出す）
+    /// true: 模様替え中
     var editing = false
+    /// 模様替えで選んでいる家具・撤去モード・回転／初期配置ボタンを押した回数
+    var selectedFurniture: String? = nil
+    var deleteMode = false
+    var rotateCount = 0
+    var resetCount = 0
 
     /// room3d.html がアプリに入っているか
     static var isAvailable: Bool {
@@ -69,6 +74,26 @@ struct Room3DView: UIViewRepresentable {
         if editing != c.lastEditing {
             c.lastEditing = editing
             c.run("app.setEdit(\(editing))")
+            c.lastSelected = nil
+            c.lastDelete = false
+        }
+        if editing {
+            if let id = selectedFurniture, id != c.lastSelected {
+                c.lastSelected = id
+                c.run("app.selectFurniture('\(id)')")
+            }
+            if deleteMode != c.lastDelete {
+                c.lastDelete = deleteMode
+                c.run("app.setDelete(\(deleteMode))")
+            }
+            if rotateCount != c.lastRotate {
+                c.lastRotate = rotateCount
+                c.run("app.rotate()")
+            }
+            if resetCount != c.lastReset {
+                c.lastReset = resetCount
+                c.run("app.resetLayout()")
+            }
         }
 
         // 筋トレ・ダンス
@@ -186,6 +211,10 @@ struct Room3DView: UIViewRepresentable {
         var lastEating: String?
         var lastLayout = ""
         var lastEditing = false
+        var lastSelected: String?
+        var lastDelete = false
+        var lastRotate = 0
+        var lastReset = 0
         var lastActivity: String?
         var onLayout: ((String) -> Void)?
 
@@ -262,4 +291,24 @@ struct DropsOverlay: View {
             }
         }
     }
+}
+
+// MARK: - 模様替えで置ける家具
+
+struct FurnitureChoice: Identifiable {
+    let id: String
+    let emoji: String
+    let name: String
+    let size: String
+
+    static let all: [FurnitureChoice] = [
+        .init(id: "sofa_ivory", emoji: "🛋️", name: "ソファ", size: "3×1"),
+        .init(id: "table_oak", emoji: "🪵", name: "ローテーブル", size: "2×1"),
+        .init(id: "media_tv", emoji: "📺", name: "テレビ台", size: "3×1"),
+        .init(id: "turntable_desk", emoji: "🎛️", name: "DJデスク", size: "2×1"),
+        .init(id: "plant_monstera", emoji: "🪴", name: "観葉植物", size: "1×1"),
+        .init(id: "lamp_arc", emoji: "💡", name: "フロアランプ", size: "1×1"),
+        .init(id: "cushion_knit", emoji: "🟦", name: "クッション", size: "1×1"),
+        .init(id: "rug_woven", emoji: "🧶", name: "ラグ", size: "4×3"),
+    ]
 }

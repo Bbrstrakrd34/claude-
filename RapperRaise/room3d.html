@@ -1962,8 +1962,9 @@ window.onload = function () {
     body.app-mode #debugPanel,
     body.app-mode #normalBottomBar,
     body.app-mode #actionMenu { display: none !important; }
-    body.app-mode.portrait #editControls,
-    body.app-mode.portrait footer { display: none !important; }
+    /* 模様替えの操作はアプリ側のボタンで行う */
+    body.app-mode #editControls,
+    body.app-mode footer { display: none !important; }
     /* オフラインでも「隠す」が効くように */
     .hidden { display: none !important; }
     body.app-mode #editControls { margin-top: 70px; }
@@ -2427,6 +2428,42 @@ window.onload = function () {
     }
     requestAnimationFrame(activityLoop);
 
+
+    // ===================================================================
+    // 2本指でピンチして拡大・縮小（いつでも）
+    // ===================================================================
+    let pinchStartDist = 0, pinchStartCam = 0, pinching = false;
+    function touchDist(t) {
+        const dx = t[0].clientX - t[1].clientX, dy = t[0].clientY - t[1].clientY;
+        return Math.hypot(dx, dy);
+    }
+    renderer.domElement.addEventListener('touchstart', (e) => {
+        if (e.touches.length === 2) {
+            pinching = true;
+            pinchStartDist = touchDist(e.touches);
+            pinchStartCam = camControl.desiredDistance;
+            isDraggingOrbit = false;
+            pointerDragDist = 999;   // 指を離したときに「タップ」扱いにしない
+        }
+    }, { passive: true });
+    renderer.domElement.addEventListener('touchmove', (e) => {
+        if (pinching && e.touches.length === 2) {
+            e.preventDefault();
+            const d = touchDist(e.touches);
+            if (d > 0) {
+                camControl.desiredDistance = Math.max(3.5, Math.min(32, pinchStartCam * pinchStartDist / d));
+            }
+            isDraggingOrbit = false;
+            pointerDragDist = 999;
+        }
+    }, { passive: false });
+    renderer.domElement.addEventListener('touchend', (e) => {
+        if (e.touches.length < 2) {
+            if (pinching) { pointerDragDist = 999; }
+            pinching = false;
+        }
+    }, { passive: true });
+
     function currentLayout() {
         return JSON.stringify(state.furnitures.map(f => ({
             id: f.catalogId, gx: f.gx, gy: f.gy, r: f.rotation
@@ -2445,9 +2482,18 @@ window.onload = function () {
         },
         setBright() { applyBright(); },
         setEdit(on) {
-            if (!!on !== !!state.editMode) document.getElementById('btnEditMode').click();
+            state.editMode = !!on;
+            state.deleteMode = false;
+            debugGridHelper.visible = !!on;
             wanderOn = !on;
+            if (on) { avatar.path = []; }
         },
+        selectFurniture(id) {
+            state.deleteMode = false;
+            state.selectedCatalogId = id;
+        },
+        setDelete(on) { state.deleteMode = !!on; },
+        rotate() { state.placementRotation = (state.placementRotation + 1) % 2; },
         doAction(type, seconds) {
             avatar.path = [];
             avatar.seatY = 0;
