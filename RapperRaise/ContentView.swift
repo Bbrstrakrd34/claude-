@@ -118,8 +118,11 @@ struct ContentView: View {
     /// 模様替え中に下に出す操作パネル
     private var editPanel: some View {
         VStack(spacing: 10) {
-            Text(deleteMode ? "撤去したい家具をタップ" : "置きたい場所の床をタップ（2本指で拡大）")
+            Text(deleteMode ? "撤去したい家具をタップ"
+                            : "家具を指でつかんで動かす／何もない床をタップで選んだ家具を置く")
                 .font(.caption.bold())
+                .multilineTextAlignment(.center)
+            Text("2本指でつまむと拡大・ずらすと移動").font(.caption2).foregroundStyle(.secondary)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(FurnitureChoice.all) { item in
@@ -144,7 +147,7 @@ struct ContentView: View {
                 }
             }
             HStack(spacing: 10) {
-                Button("↻ 回転") { rotateCount += 1 }
+                Button("↻ 向きを変える") { rotateCount += 1 }
                     .buttonStyle(.bordered)
                 Button(deleteMode ? "🗑 撤去中" : "🗑 撤去") { deleteMode.toggle() }
                     .buttonStyle(.borderedProminent)

@@ -563,14 +563,14 @@ function buildIndustrialWindowWall() {
     const wx = -HALF_ROOM - 0.16;
 
     // 腰壁（下部）
-    const bottomWall = new THREE.Mesh(new THREE.BoxGeometry(0.32, 1.0, ROOM_SIZE + 0.4), brickMat);
+    const bottomWall = new THREE.Mesh(new THREE.BoxGeometry(0.32, 1.0, ROOM_SIZE - 2.4), brickMat); // 柱と重ならない長さ（重なるとちらつく）
     bottomWall.position.set(wx, 0.5, 0);
     bottomWall.castShadow = true;
     bottomWall.receiveShadow = true;
     wallGroup.add(bottomWall);
 
     // 垂れ壁（上部）
-    const topWall = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.7, ROOM_SIZE + 0.4), plasterMat);
+    const topWall = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.7, ROOM_SIZE - 2.4), plasterMat);
     topWall.position.set(wx, WALL_HEIGHT - 0.35, 0);
     topWall.castShadow = true;
     wallGroup.add(topWall);
@@ -2430,39 +2430,192 @@ window.onload = function () {
 
 
     // ===================================================================
-    // 2本指でピンチして拡大・縮小（いつでも）
+    // 2本指：ピンチした場所に向かって拡大・縮小＋2本指で移動（いつでも）
     // ===================================================================
-    let pinchStartDist = 0, pinchStartCam = 0, pinching = false;
-    function touchDist(t) {
-        const dx = t[0].clientX - t[1].clientX, dy = t[0].clientY - t[1].clientY;
-        return Math.hypot(dx, dy);
+    const activePointers = new Set();
+    let pinch = null;
+    function floorPointAt(x, y) {
+        const ndc = new THREE.Vector2((x / window.innerWidth) * 2 - 1, -(y / window.innerHeight) * 2 + 1);
+        raycaster.setFromCamera(ndc, camera);
+        const p = new THREE.Vector3();
+        return raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), p) ? p : null;
+    }
+    function touchInfo(t) {
+        return {
+            d: Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY),
+            x: (t[0].clientX + t[1].clientX) / 2,
+            y: (t[0].clientY + t[1].clientY) / 2
+        };
     }
     renderer.domElement.addEventListener('touchstart', (e) => {
         if (e.touches.length === 2) {
-            pinching = true;
-            pinchStartDist = touchDist(e.touches);
-            pinchStartCam = camControl.desiredDistance;
-            isDraggingOrbit = false;
-            pointerDragDist = 999;   // 指を離したときに「タップ」扱いにしない
-        }
-    }, { passive: true });
-    renderer.domElement.addEventListener('touchmove', (e) => {
-        if (pinching && e.touches.length === 2) {
-            e.preventDefault();
-            const d = touchDist(e.touches);
-            if (d > 0) {
-                camControl.desiredDistance = Math.max(3.5, Math.min(32, pinchStartCam * pinchStartDist / d));
-            }
+            cancelEditDrag();
+            const i = touchInfo(e.touches);
+            camControl.desiredTarget.copy(camControl.target);
+            camControl.desiredDistance = camControl.distance;
+            pinch = {
+                d: i.d, x: i.x, y: i.y,
+                cam: camControl.distance,
+                target: camControl.target.clone(),
+                anchor: floorPointAt(i.x, i.y) || camControl.target.clone()
+            };
             isDraggingOrbit = false;
             pointerDragDist = 999;
         }
+    }, { passive: true });
+    renderer.domElement.addEventListener('touchmove', (e) => {
+        if (!pinch || e.touches.length !== 2) return;
+        e.preventDefault();
+        const i = touchInfo(e.touches);
+        const dist = Math.max(3.5, Math.min(32, pinch.cam * pinch.d / Math.max(i.d, 1)));
+        const k = dist / pinch.cam;
+        // ピンチした場所に向かって寄る
+        let tx = pinch.anchor.x + (pinch.target.x - pinch.anchor.x) * k;
+        let tz = pinch.anchor.z + (pinch.target.z - pinch.anchor.z) * k;
+        // 2本指でずらすと部屋も動く
+        const f = dist * 0.0016, yaw = camControl.yaw;
+        const dx = i.x - pinch.x, dy = i.y - pinch.y;
+        tx += -Math.cos(yaw) * dx * f - Math.sin(yaw) * dy * f;
+        tz += Math.sin(yaw) * dx * f - Math.cos(yaw) * dy * f;
+        tx = Math.max(-HALF_ROOM, Math.min(HALF_ROOM, tx));
+        tz = Math.max(-HALF_ROOM, Math.min(HALF_ROOM, tz));
+        camControl.desiredTarget.set(tx, pinch.target.y, tz);
+        camControl.target.copy(camControl.desiredTarget);
+        camControl.desiredDistance = dist;
+        camControl.distance = dist;
+        isDraggingOrbit = false;
+        pointerDragDist = 999;
     }, { passive: false });
     renderer.domElement.addEventListener('touchend', (e) => {
-        if (e.touches.length < 2) {
-            if (pinching) { pointerDragDist = 999; }
-            pinching = false;
+        if (e.touches.length < 2 && pinch) {
+            pinch = null;
+            pointerDragDist = 999;
         }
     }, { passive: true });
+
+    // ===================================================================
+    // 模様替え：家具を指でつかんで動かす／何もない床をなぞって置く
+    // ===================================================================
+    let editDrag = null;
+    let lastPlaced = null;
+    function makeGhost(catalogId, rotation) {
+        const def = FURNITURE_CATALOG.find(f => f.id === catalogId);
+        if (!def) return null;
+        const dims = getFurnitureDimensions(def, rotation);
+        const g = createFurniture3DModel(catalogId, dims.w, dims.d, rotation);
+        g.traverse(o => {
+            if (o.isMesh) {
+                o.material = o.material.clone();
+                o.material.transparent = true;
+                o.material.opacity = 0.55;
+                o.castShadow = false;
+            }
+        });
+        g.position.y = 0.04;
+        scene.add(g);
+        return { group: g, w: dims.w, d: dims.d };
+    }
+    function tileFromEvent(e) {
+        updatePointerNDC(e.clientX, e.clientY);
+        return getHoveredGridTile();
+    }
+    function moveGhost(tile) {
+        if (!editDrag || !editDrag.ghost || !tile) return;
+        const gx = tile.gx - editDrag.off.x, gy = tile.gy - editDrag.off.y;
+        const pos = gridToWorld(gx, gy, editDrag.ghost.w, editDrag.ghost.d);
+        editDrag.ghost.group.position.set(pos.x, 0.04, pos.z);
+        editDrag.tile = { gx, gy };
+        const ok = canPlaceFurniture(editDrag.catalogId, gx, gy, editDrag.rotation);
+        editDrag.ghost.group.traverse(o => { if (o.isMesh) o.material.opacity = ok ? 0.6 : 0.18; });
+    }
+    function endGhost() {
+        if (editDrag && editDrag.ghost) scene.remove(editDrag.ghost.group);
+        floorReticle.visible = false;
+    }
+    function cancelEditDrag() {
+        if (!editDrag) return;
+        const p = editDrag.picked;
+        if (p) placeFurniture(p.id, p.gx, p.gy, p.r);
+        endGhost();
+        editDrag = null;
+    }
+    function findPlaced(id, gx, gy) {
+        return state.furnitures.find(f => f.catalogId === id && f.gx === gx && f.gy === gy) || null;
+    }
+
+    window.addEventListener('pointerdown', (e) => {
+        activePointers.add(e.pointerId);
+        if (activePointers.size > 1) { cancelEditDrag(); e.stopImmediatePropagation(); return; }
+        if (!state.editMode || e.target !== renderer.domElement) return;
+        e.stopImmediatePropagation();   // 模様替え中はカメラを回さない
+        const tile = tileFromEvent(e);
+        if (!tile) return;
+        const hit = getFurnitureAt(tile.gx, tile.gy, true);
+        if (state.deleteMode) {
+            if (hit) removeFurnitureByUid(hit.instance.uid);
+            return;
+        }
+        if (hit) {
+            const it = hit.instance;
+            removeFurnitureByUid(it.uid);
+            editDrag = {
+                picked: { id: it.catalogId, gx: it.gx, gy: it.gy, r: it.rotation },
+                catalogId: it.catalogId, rotation: it.rotation,
+                off: { x: tile.gx - it.gx, y: tile.gy - it.gy }
+            };
+        } else {
+            editDrag = { picked: null, catalogId: state.selectedCatalogId,
+                         rotation: state.placementRotation, off: { x: 0, y: 0 } };
+        }
+        editDrag.ghost = makeGhost(editDrag.catalogId, editDrag.rotation);
+        moveGhost(tile);
+    }, { capture: true });
+
+    window.addEventListener('pointermove', (e) => {
+        if (activePointers.size > 1) { e.stopImmediatePropagation(); return; }
+        if (!state.editMode || !editDrag) return;
+        e.stopImmediatePropagation();
+        moveGhost(tileFromEvent(e));
+    }, { capture: true });
+
+    function finishPointer(e) {
+        const wasMulti = activePointers.size > 1;
+        activePointers.delete(e.pointerId);
+        if (wasMulti) { pointerDragDist = 999; e.stopImmediatePropagation(); return; }
+        if (!state.editMode) return;
+        e.stopImmediatePropagation();
+        if (!editDrag) return;
+        const t = editDrag.tile;
+        let placed = false;
+        if (t) placed = placeFurniture(editDrag.catalogId, t.gx, t.gy, editDrag.rotation);
+        if (placed) {
+            lastPlaced = { id: editDrag.catalogId, gx: t.gx, gy: t.gy };
+        } else if (editDrag.picked) {
+            const p = editDrag.picked;
+            placeFurniture(p.id, p.gx, p.gy, p.r);
+            lastPlaced = { id: p.id, gx: p.gx, gy: p.gy };
+        }
+        endGhost();
+        editDrag = null;
+    }
+    window.addEventListener('pointerup', finishPointer, { capture: true });
+    window.addEventListener('pointercancel', finishPointer, { capture: true });
+
+    // 最後に置いた（動かした）家具をその場で回転。なければ次に置く向きを変える
+    function rotateLast() {
+        if (lastPlaced) {
+            const it = findPlaced(lastPlaced.id, lastPlaced.gx, lastPlaced.gy);
+            if (it) {
+                removeFurnitureByUid(it.uid);
+                const r = (it.rotation + 1) % 2;
+                if (!placeFurniture(it.catalogId, it.gx, it.gy, r)) {
+                    placeFurniture(it.catalogId, it.gx, it.gy, it.rotation);
+                }
+                return;
+            }
+        }
+        state.placementRotation = (state.placementRotation + 1) % 2;
+    }
 
     function currentLayout() {
         return JSON.stringify(state.furnitures.map(f => ({
@@ -2493,7 +2646,7 @@ window.onload = function () {
             state.selectedCatalogId = id;
         },
         setDelete(on) { state.deleteMode = !!on; },
-        rotate() { state.placementRotation = (state.placementRotation + 1) % 2; },
+        rotate() { rotateLast(); },
         doAction(type, seconds) {
             avatar.path = [];
             avatar.seatY = 0;
