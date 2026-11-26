@@ -12,6 +12,8 @@ struct Room3DView: UIViewRepresentable {
     var stageOverride: Stage? = nil
     /// true: キャラを正面から大きく映す
     var portrait = false
+    /// true: 模様替え中（家具の一覧を出す）
+    var editing = false
 
     /// room3d.html がアプリに入っているか
     static var isAvailable: Bool {
@@ -39,8 +41,7 @@ struct Room3DView: UIViewRepresentable {
             if game.data.room3D != json { game.data.room3D = json }
         }
 
-        c.run("app.setCompact(\(compact))")
-        c.run("app.setLight('\(Self.lightForNow())')")
+        c.run("app.setCompact(true)")
         if !game.data.room3D.isEmpty {
             c.lastLayout = game.data.room3D
             c.run("app.setLayout(\(game.data.room3D))")
@@ -63,6 +64,18 @@ struct Room3DView: UIViewRepresentable {
             if portrait { c.run("app.setPortrait(true)") }
         }
         if portrait { return }
+
+        // 模様替えモード
+        if editing != c.lastEditing {
+            c.lastEditing = editing
+            c.run("app.setEdit(\(editing))")
+        }
+
+        // 筋トレ・ダンス
+        if game.activity != c.lastActivity {
+            c.lastActivity = game.activity
+            if let a = game.activity { c.run("app.doAction('\(a)', 4)") }
+        }
 
         // セリフ
         if game.speech != c.lastSpeech {
@@ -172,6 +185,8 @@ struct Room3DView: UIViewRepresentable {
         var lastSpeech: String?
         var lastEating: String?
         var lastLayout = ""
+        var lastEditing = false
+        var lastActivity: String?
         var onLayout: ((String) -> Void)?
 
         func run(_ js: String) {

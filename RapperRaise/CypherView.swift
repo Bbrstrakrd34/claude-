@@ -116,13 +116,13 @@ enum AIBattleJudge {
 }
 #endif
 
-// MARK: - サイファー（2ラウンド制のMCバトル）
+// MARK: - サイファー（レトロRPG風の2ラウンド制MCバトル）
 
 struct CypherView: View {
     @EnvironmentObject var game: GameState
     @Environment(\.dismiss) private var dismiss
 
-    enum Phase { case ready, talking, playerTurn, judging, flags, result }
+    enum Phase { case ready, intro, talking, command, input, judging, flags, result }
 
     @State private var phase: Phase = .ready
     @State private var round = 0
@@ -139,64 +139,113 @@ struct CypherView: View {
     @State private var foeSprite: Image?
     @State private var won = false
     @State private var notice = ""
+    @State private var foeHype: Double = 1      // 相手の「会場の支持」ゲージ（0〜1）
+    @State private var myHype: Double = 1       // 自分のゲージ
+    @State private var spritesIn = false        // 登場アニメーション
+    @State private var foeHit = false           // ダメージで点滅
+    @State private var myHit = false
+    @State private var flash = false
     @FocusState private var focused: Bool
 
     private var blueTotal: Int { votes.reduce(0, +) }
     private var redTotal: Int { votes.count * 5 - blueTotal }
-    private let field = Color(hex: 0xC8D8A8)
+
+    // レトロゲーム風の色
+    private let ink = Color(hex: 0x202028)
+    private let paper = Color(hex: 0xF8F8F0)
+    private let frame = Color(hex: 0x3A4A6B)
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
-            VStack(spacing: 12) {
-                header
-                arena
-                switch phase {
-                case .ready: readyPanel
-                case .talking: textBox
-                case .playerTurn: playerPanel
-                case .judging:
-                    textBox
-                    ProgressView("観客が審査中…").tint(.white).foregroundStyle(.white)
-                case .flags: flagsPanel
-                case .result: resultPanel
-                }
-                Spacer()
+            Color(hex: 0x101018).ignoresSafeArea()
+            VStack(spacing: 0) {
+                field
+                bottomPanel
             }
-            .padding()
+            if flash {
+                Color.white.ignoresSafeArea().transition(.opacity)
+            }
         }
+        .font(.system(.body, design: .monospaced).bold())
         .onAppear(perform: prepare)
     }
 
-    // MARK: 画面のパーツ
+    // MARK: バトルフィールド
 
-    private var header: some View {
-        HStack {
-            Text("ROUND \(min(round + 1, 2))/2")
-            Spacer()
-            Text("🟥 \(redTotal)  🟦 \(blueTotal)")
-            Spacer()
-            Button("✕") { dismiss() }
-        }
-        .font(.system(.headline, design: .monospaced))
-        .foregroundStyle(.white)
-    }
+    private var field: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let h = geo.size.height
+            ZStack {
+                // 背景（上が明るい空、下が草地）
+                LinearGradient(colors: [Color(hex: 0xF0F4E8), Color(hex: 0xD8E8C0), Color(hex: 0xB8D898)],
+                               startPoint: .top, endPoint: .bottom)
+                // 横のスジ（レトロな雰囲気）
+                VStack(spacing: 6) {
+                    ForEach(0..<40, id: \.self) { _ in
+                        Rectangle().fill(Color.white.opacity(0.18)).frame(height: 2)
+                    }
+                }
 
-    private var arena: some View {
-        VStack(spacing: 0) {
-            HStack(alignment: .top) {
-                nameplate(opponentName, age: game.age, corner: .red)
-                Spacer()
-                sprite(foeSprite).scaleEffect(x: -1, y: 1)
-            }
-            HStack(alignment: .bottom) {
+                // 相手の足場とキャラ（右上）
+                Ellipse().fill(Color(hex: 0x98C070))
+                    .overlay(Ellipse().stroke(Color(hex: 0x6E9850), lineWidth: 3))
+                    .frame(width: w * 0.46, height: h * 0.1)
+                    .position(x: w * 0.72, y: h * 0.42)
+                sprite(foeSprite)
+                    .scaleEffect(x: -1, y: 1)
+                    .frame(width: w * 0.34, height: h * 0.36)
+                    .opacity(foeHit ? 0.15 : 1)
+                    .position(x: spritesIn ? w * 0.72 : w * 1.4, y: h * 0.27)
+
+                // 自分の足場とキャラ（左下）
+                Ellipse().fill(Color(hex: 0x98C070))
+                    .overlay(Ellipse().stroke(Color(hex: 0x6E9850), lineWidth: 3))
+                    .frame(width: w * 0.56, height: h * 0.12)
+                    .position(x: w * 0.28, y: h * 0.92)
                 sprite(mySprite)
-                Spacer()
-                nameplate(game.data.name, age: game.age, corner: .blue)
+                    .frame(width: w * 0.42, height: h * 0.44)
+                    .opacity(myHit ? 0.15 : 1)
+                    .position(x: spritesIn ? w * 0.28 : w * -0.4, y: h * 0.74)
+
+                // 相手のステータス枠（左上）
+                statusBox(name: opponentName, hype: foeHype, showNumbers: false)
+                    .frame(width: w * 0.52)
+                    .position(x: w * 0.3, y: h * 0.11)
+
+                // 自分のステータス枠（右下）
+                statusBox(name: game.data.name, hype: myHype, showNumbers: true)
+                    .frame(width: w * 0.54)
+                    .position(x: w * 0.71, y: h * 0.62)
+
+                // 観客の旗
+                if phase == .flags {
+                    flagsRow
+                        .padding(10)
+                        .background(paper.opacity(0.92), in: RoundedRectangle(cornerRadius: 10))
+                        .position(x: w * 0.5, y: h * 0.45)
+                }
+
+                // ラウンド表示と閉じるボタン
+                HStack {
+                    Text("ROUND \(min(round + 1, 2))/2")
+                        .font(.system(.caption, design: .monospaced).bold())
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(ink, in: Capsule())
+                        .foregroundStyle(paper)
+                    Spacer()
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark")
+                            .font(.headline)
+                            .foregroundStyle(paper)
+                            .frame(width: 34, height: 34)
+                            .background(ink, in: Circle())
+                    }
+                }
+                .padding(.horizontal, 12)
+                .position(x: w / 2, y: h * 0.025 + 14)
             }
         }
-        .padding(12)
-        .background(field, in: RoundedRectangle(cornerRadius: 12))
     }
 
     private func sprite(_ image: Image?) -> some View {
@@ -204,99 +253,51 @@ struct CypherView: View {
             .resizable()
             .interpolation(.none)
             .scaledToFit()
-            .frame(width: 110, height: 130)
     }
 
-    private func nameplate(_ name: String, age: Int, corner: Color) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(name).bold()
-            Text("Lv.\(age)")
-        }
-        .font(.system(.subheadline, design: .monospaced))
-        .foregroundStyle(.black)
-        .padding(8)
-        .background(.white, in: RoundedRectangle(cornerRadius: 6))
-        .overlay(RoundedRectangle(cornerRadius: 6).stroke(corner, lineWidth: 3))
-    }
-
-    private var textBox: some View {
-        Text(typed)
-            .font(.system(size: 17, design: .monospaced))
-            .foregroundStyle(.white)
-            .frame(maxWidth: .infinity, minHeight: 96, alignment: .topLeading)
-            .padding(12)
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(.white, lineWidth: 3))
-    }
-
-    private var readyPanel: some View {
-        VStack(spacing: 12) {
-            Text("相手のディスに言い返して、観客5人の旗を取れ！\n2ラウンドで旗が多いほうの勝ち。")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.white)
-            Button("🔥 バトル開始（2pt）") {
-                guard game.pay(2, minStage: .kid) else {
-                    notice = game.message
-                    return
-                }
-                Task { await startBattle() }
+    private func statusBox(name: String, hype: Double, showNumbers: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(name).lineLimit(1)
+                Spacer()
+                Text("Lv\(game.age)")
             }
-            .buttonStyle(.borderedProminent)
-            .tint(.red)
-            .controlSize(.large)
-            if !notice.isEmpty {
-                Text(notice).foregroundStyle(.yellow)
+            .font(.system(.subheadline, design: .monospaced).bold())
+            HStack(spacing: 6) {
+                Text("HYPE")
+                    .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                    .foregroundStyle(Color(hex: 0xF8C030))
+                    .padding(.horizontal, 4)
+                    .background(ink, in: RoundedRectangle(cornerRadius: 3))
+                HypeBar(value: hype)
+            }
+            if showNumbers {
+                Text("\(Int((hype * 50).rounded()))/ 50")
+                    .font(.system(.caption, design: .monospaced).bold())
+                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
+        .foregroundStyle(ink)
+        .padding(10)
+        .background(paper, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(ink, lineWidth: 3))
     }
 
-    private var playerPanel: some View {
-        VStack(spacing: 10) {
-            textBox
-            TextField("言い返せ！", text: $reply, axis: .vertical)
-                .lineLimit(2...4)
-                .textFieldStyle(.roundedBorder)
-                .focused($focused)
-            Button("🎤 言い返す！") { submit() }
-                .buttonStyle(.borderedProminent)
-                .tint(.blue)
-                .disabled(reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        }
-    }
-
-    private var flagsPanel: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 14) {
+    private var flagsRow: some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 12) {
                 ForEach(0..<5, id: \.self) { i in
-                    VStack(spacing: 2) {
+                    VStack(spacing: 0) {
                         Rectangle()
                             .fill(flagColor(i))
-                            .frame(width: 26, height: 18)
-                            .offset(y: i < shownFlags ? 0 : 18)
-                        Text("🧍").font(.system(size: 34))
+                            .frame(width: 22, height: 15)
+                            .offset(y: i < shownFlags ? 0 : 14)
+                        Text("🧍").font(.system(size: 28))
                     }
                 }
             }
             if shownFlags == 5 {
-                Text("「\(comment)」")
-                    .font(.headline)
-                    .foregroundStyle(.white)
-            }
-        }
-    }
-
-    private var resultPanel: some View {
-        VStack(spacing: 12) {
-            Text(won ? "🏆 勝利！" : "😤 敗北…")
-                .font(.largeTitle.bold())
-                .foregroundStyle(won ? .yellow : .white)
-            Text("🟦 \(blueTotal) 対 🟥 \(redTotal)")
-                .font(.title2.monospaced())
-                .foregroundStyle(.white)
-            Text(won ? "度胸・リリック・人気が大きく上がった！ +3pt" : "度胸とリリックが少し上がった")
-                .foregroundStyle(.white.opacity(0.85))
-            HStack {
-                Button("もう1戦") { rematch() }.buttonStyle(.borderedProminent)
-                Button("閉じる") { dismiss() }.buttonStyle(.bordered).tint(.white)
+                Text("「\(comment)」").font(.system(.caption, design: .monospaced).bold()).foregroundStyle(ink)
             }
         }
     }
@@ -304,6 +305,88 @@ struct CypherView: View {
     private func flagColor(_ i: Int) -> Color {
         guard i < shownFlags, i < flagIsBlue.count else { return .clear }
         return flagIsBlue[i] ? .blue : .red
+    }
+
+    // MARK: 下のパネル（文字ボックス＋コマンド）
+
+    private var bottomPanel: some View {
+        VStack(spacing: 10) {
+            switch phase {
+            case .ready:
+                messageBox("\(game.data.name)は サイファーに さんかする？\n（2pt つかいます）")
+                HStack(spacing: 10) {
+                    commandButton("🔥 たたかう") {
+                        guard game.pay(2, minStage: .kid) else {
+                            notice = game.message
+                            return
+                        }
+                        Task { await startBattle() }
+                    }
+                    commandButton("🏃 やめる") { dismiss() }
+                }
+                if !notice.isEmpty {
+                    Text(notice).foregroundStyle(Color(hex: 0xF8C030)).font(.caption)
+                }
+            case .intro, .talking, .judging, .flags:
+                messageBox(typed)
+                if phase == .judging {
+                    ProgressView().tint(paper)
+                }
+            case .command:
+                HStack(spacing: 10) {
+                    messageBox("\(game.data.name)は\nどうする？")
+                    VStack(spacing: 8) {
+                        commandButton("🎤 いいかえす") {
+                            phase = .input
+                            focused = true
+                        }
+                        commandButton("🏃 にげる") { forfeit() }
+                    }
+                    .frame(width: 150)
+                }
+            case .input:
+                messageBox(typed)
+                TextField("言い返せ！", text: $reply, axis: .vertical)
+                    .lineLimit(2...3)
+                    .padding(10)
+                    .background(paper, in: RoundedRectangle(cornerRadius: 8))
+                    .foregroundStyle(ink)
+                    .focused($focused)
+                commandButton("🎤 いいかえす！") { submit() }
+                    .disabled(reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            case .result:
+                messageBox(won ? "\(game.data.name)の しょうり！\n会場は だいもりあがり！ +3pt"
+                               : "\(game.data.name)は まけてしまった…\nつぎは かてる！")
+                HStack(spacing: 10) {
+                    commandButton("🔁 もう1戦") { rematch() }
+                    commandButton("🚪 もどる") { dismiss() }
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity)
+        .background(frame)
+    }
+
+    private func messageBox(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 17, weight: .bold, design: .monospaced))
+            .foregroundStyle(ink)
+            .frame(maxWidth: .infinity, minHeight: 84, alignment: .topLeading)
+            .padding(12)
+            .background(paper, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(hex: 0xC8A048), lineWidth: 4))
+    }
+
+    private func commandButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 16, weight: .heavy, design: .monospaced))
+                .foregroundStyle(ink)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .background(paper, in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(ink, lineWidth: 3))
+        }
     }
 
     // MARK: 進行
@@ -316,24 +399,33 @@ struct CypherView: View {
 
     /// キャラを小さく描いてから拡大して、ドット絵っぽくする
     private func pixel(_ look: Appearance) -> Image? {
-        let renderer = ImageRenderer(content: AvatarView(look: look, stage: game.stage, size: 36))
+        let renderer = ImageRenderer(content: AvatarView(look: look, stage: game.stage, size: 40))
         renderer.scale = 1
         guard let cg = renderer.cgImage else { return nil }
         return Image(decorative: cg, scale: 1)
     }
 
     private func startBattle() async {
-        phase = .talking
-        await type("\(opponentName)（\(game.age)歳）が\nバトルを しかけてきた！")
+        phase = .intro
+        // 画面がピカッと光ってから、両者が登場
+        for _ in 0..<2 {
+            withAnimation(.easeInOut(duration: 0.12)) { flash = true }
+            try? await Task.sleep(for: .milliseconds(140))
+            withAnimation(.easeInOut(duration: 0.12)) { flash = false }
+            try? await Task.sleep(for: .milliseconds(140))
+        }
+        withAnimation(.easeOut(duration: 0.7)) { spritesIn = true }
+        await type("\(opponentName)（\(game.age)さい）が\nバトルを いどんできた！")
         try? await Task.sleep(for: .seconds(1))
         await opponentTurn()
     }
 
     private func opponentTurn() async {
         phase = .talking
-        await type("\(opponentName)：\n「\(disses[round])」")
-        phase = .playerTurn
-        focused = true
+        await type("\(opponentName)の ディス！\n「\(disses[round])」")
+        try? await Task.sleep(for: .milliseconds(600))
+        await blink(me: true)
+        phase = .command
     }
 
     private func submit() {
@@ -342,18 +434,27 @@ struct CypherView: View {
         focused = false
         Task {
             phase = .judging
-            await type("\(game.data.name)：\n「\(text)」")
+            await type("\(game.data.name)の いいかえし！\n「\(text)」")
             let (v, c) = await BattleJudge.judge(diss: disses[round], reply: text, age: game.age)
             votes.append(v)
             comment = c
             flagIsBlue = (Array(repeating: true, count: v) + Array(repeating: false, count: 5 - v)).shuffled()
             shownFlags = 0
             phase = .flags
+            typed = "かんきゃくの はんてい！"
             for i in 1...5 {
-                try? await Task.sleep(for: .milliseconds(450))
+                try? await Task.sleep(for: .milliseconds(420))
                 withAnimation(.spring) { shownFlags = i }
             }
-            try? await Task.sleep(for: .seconds(2))
+            try? await Task.sleep(for: .seconds(1))
+            // 旗の数だけゲージが減る
+            withAnimation(.easeInOut(duration: 0.8)) {
+                foeHype = max(0, foeHype - Double(v) / 10)
+                myHype = max(0, myHype - Double(5 - v) / 10)
+            }
+            if v >= 3 { await blink(me: false) } else { await blink(me: true) }
+            typed = v >= 3 ? "かいしんの いっぱつ！ 会場がわいた！" : (v == 0 ? "まったく ひびかなかった…" : "あまり ひびかなかった…")
+            try? await Task.sleep(for: .seconds(1.5))
             reply = ""
             if round == 0 {
                 round = 1
@@ -366,11 +467,27 @@ struct CypherView: View {
         }
     }
 
+    private func blink(me: Bool) async {
+        for _ in 0..<3 {
+            if me { myHit = true } else { foeHit = true }
+            try? await Task.sleep(for: .milliseconds(90))
+            myHit = false
+            foeHit = false
+            try? await Task.sleep(for: .milliseconds(90))
+        }
+    }
+
+    private func forfeit() {
+        won = false
+        game.rewardCypher(win: false)
+        phase = .result
+    }
+
     private func type(_ s: String) async {
         typed = ""
         for ch in s {
             typed.append(ch)
-            try? await Task.sleep(for: .milliseconds(40))
+            try? await Task.sleep(for: .milliseconds(35))
         }
     }
 
@@ -383,9 +500,34 @@ struct CypherView: View {
         notice = ""
         shownFlags = 0
         flagIsBlue = []
+        foeHype = 1
+        myHype = 1
+        spritesIn = false
         opponentLook = Appearance.random()
         opponentName = Disses.names.randomElement()!
         prepare()
         phase = .ready
+    }
+}
+
+// MARK: - HYPEゲージ（減ると緑→黄→赤）
+
+struct HypeBar: View {
+    let value: Double
+
+    private var color: Color {
+        value > 0.5 ? Color(hex: 0x58D068) : (value > 0.2 ? Color(hex: 0xF8C030) : Color(hex: 0xE85040))
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color(hex: 0x505860))
+                Capsule().fill(color)
+                    .frame(width: max(0, geo.size.width * value))
+            }
+        }
+        .frame(height: 9)
+        .overlay(Capsule().stroke(Color(hex: 0x202028), lineWidth: 2))
     }
 }

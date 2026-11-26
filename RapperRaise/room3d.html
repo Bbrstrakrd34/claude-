@@ -1957,10 +1957,16 @@ window.onload = function () {
 
 <!-- ===== アプリ（RAPPER RAISE）との連携用 ===== -->
 <style>
-    body.app-compact header,
-    body.app-compact footer,
-    body.app-compact #debugPanel,
-    body.app-compact #editControls { display: none !important; }
+    /* アプリ内では、上のボタン類・チャット欄・アクション欄は使わない */
+    body.app-mode header,
+    body.app-mode #debugPanel,
+    body.app-mode #normalBottomBar,
+    body.app-mode #actionMenu { display: none !important; }
+    body.app-mode.portrait #editControls,
+    body.app-mode.portrait footer { display: none !important; }
+    /* オフラインでも「隠す」が効くように */
+    .hidden { display: none !important; }
+    body.app-mode #editControls { margin-top: 70px; }
 </style>
 <script>
 (function () {
@@ -2299,6 +2305,127 @@ window.onload = function () {
         }
     };
 
+
+    // ===================================================================
+    // 白いタイルの床
+    // ===================================================================
+    function makeTileTextures() {
+        const size = 1024, tiles = 10, step = size / tiles;
+        const c = document.createElement('canvas'); c.width = c.height = size;
+        const g = c.getContext('2d');
+        const b = document.createElement('canvas'); b.width = b.height = size;
+        const bg = b.getContext('2d');
+        bg.fillStyle = '#ffffff'; bg.fillRect(0, 0, size, size);
+        for (let y = 0; y < tiles; y++) {
+            for (let x = 0; x < tiles; x++) {
+                const v = 242 + Math.floor(Math.random() * 8);
+                g.fillStyle = `rgb(${v},${v},${v - 2})`;
+                g.fillRect(x * step, y * step, step, step);
+                // うっすら大理石っぽい模様
+                g.strokeStyle = 'rgba(180,180,175,0.12)';
+                g.lineWidth = 1;
+                g.beginPath();
+                g.moveTo(x * step + Math.random() * step, y * step);
+                g.bezierCurveTo(x * step + Math.random() * step, y * step + step * 0.3,
+                                x * step + Math.random() * step, y * step + step * 0.7,
+                                x * step + Math.random() * step, y * step + step);
+                g.stroke();
+            }
+        }
+        // 目地
+        g.fillStyle = '#d6d6d2';
+        bg.fillStyle = '#7a7a7a';
+        for (let i = 0; i <= tiles; i++) {
+            g.fillRect(i * step - 2, 0, 4, size); g.fillRect(0, i * step - 2, size, 4);
+            bg.fillRect(i * step - 2, 0, 4, size); bg.fillRect(0, i * step - 2, size, 4);
+        }
+        const map = new THREE.CanvasTexture(c);
+        map.encoding = THREE.sRGBEncoding;
+        map.anisotropy = 8;
+        const bump = new THREE.CanvasTexture(b);
+        return { map, bump };
+    }
+    function applyWhiteTiles() {
+        const t = makeTileTextures();
+        floorMat.map = t.map;
+        floorMat.bumpMap = t.bump;
+        floorMat.bumpScale = 0.02;
+        floorMat.roughnessMap = null;
+        floorMat.roughness = 0.28;
+        floorMat.metalness = 0.0;
+        floorMat.color.set('#ffffff');
+        floorMat.needsUpdate = true;
+    }
+
+    // ===================================================================
+    // いつも明るい部屋
+    // ===================================================================
+    function applyBright() {
+        applyLightingPreset('morning');
+        scene.background.setHex(0xe9eef3);
+        scene.fog.color.setHex(0xe9eef3);
+        scene.fog.density = 0.01;
+        sunLight.color.setHex(0xfffaf0);
+        sunLight.intensity = 2.3;
+        hemiLight.color.setHex(0xffffff);
+        hemiLight.groundColor.setHex(0xcfc8bd);
+        hemiLight.intensity = 1.0;
+        lampPointLight.intensity = 0.6;
+        sunBeamGroup.visible = false;
+        dustMat.opacity = 0.0;
+        rainMat.opacity = 0.0;
+        renderer.toneMappingExposure = 1.1;
+    }
+
+    // 画面の縦横比に合わせて、部屋全体が入るようにカメラを引く
+    function fitCamera() {
+        if (state.cameraPreset === 'portrait') return;
+        const a = window.innerWidth / Math.max(window.innerHeight, 1);
+        camControl.desiredDistance = a < 0.6 ? 27 : (a < 0.9 ? 20 : 15);
+        camControl.desiredPitch = a < 0.9 ? 0.62 : 0.56;
+    }
+    window.addEventListener('resize', fitCamera);
+
+    // ===================================================================
+    // 筋トレ・ダンスの動き
+    // ===================================================================
+    let activity = null;
+    function activityLoop() {
+        requestAnimationFrame(activityLoop);
+        if (!activity) return;
+        const L = avatarRig.userData.limbs;
+        if (!L) return;
+        const now = performance.now();
+        const t = (now - activity.start) / 1000;
+        if (now > activity.until || avatar.action !== activity.type) {
+            L.leftArmPivot.rotation.z = 0;
+            L.rightArmPivot.rotation.z = 0;
+            avatar.seatY = 0;
+            if (avatar.action === activity.type) avatar.action = 'idle';
+            activity = null;
+            return;
+        }
+        if (activity.type === 'workout') {
+            // スクワット
+            const s = (1 - Math.cos(t * 4)) / 2;
+            L.leftLegPivot.rotation.x = -s * 1.1;
+            L.rightLegPivot.rotation.x = -s * 1.1;
+            L.leftArmPivot.rotation.x = -1.45;
+            L.rightArmPivot.rotation.x = -1.45;
+            avatar.seatY = -s * 0.3 * currentScale * (avatarRig.userData.hipY || 0.9);
+        } else {
+            // ダンス
+            const b = Math.sin(t * 9);
+            L.leftArmPivot.rotation.z = -(1.5 + 0.8 * Math.sin(t * 6));
+            L.rightArmPivot.rotation.z = 1.5 + 0.8 * Math.sin(t * 6 + Math.PI);
+            L.leftLegPivot.rotation.x = b * 0.45;
+            L.rightLegPivot.rotation.x = -b * 0.45;
+            avatar.seatY = Math.abs(b) * 0.1;
+            avatar.rotY += 0.035;
+        }
+    }
+    requestAnimationFrame(activityLoop);
+
     function currentLayout() {
         return JSON.stringify(state.furnitures.map(f => ({
             id: f.catalogId, gx: f.gx, gy: f.gy, r: f.rotation
@@ -2308,9 +2435,24 @@ window.onload = function () {
     window.app = {
         say(t) { showSpeechBubble(t); },
         emote(s) { showEmote(s); },
+        // アプリ用の表示にする（明るい部屋・白いタイル・ボタン類なし）
         setCompact(on) {
-            document.body.classList.toggle('app-compact', !!on);
-            camControl.desiredDistance = on ? 19 : 14.5;
+            document.body.classList.add('app-mode');
+            applyWhiteTiles();
+            applyBright();
+            fitCamera();
+        },
+        setBright() { applyBright(); },
+        setEdit(on) {
+            if (!!on !== !!state.editMode) document.getElementById('btnEditMode').click();
+            wanderOn = !on;
+        },
+        doAction(type, seconds) {
+            avatar.path = [];
+            avatar.seatY = 0;
+            avatar.action = type;
+            const now = performance.now();
+            activity = { type: type, start: now, until: now + (seconds || 4) * 1000 };
         },
         setLight(p) {
             applyLightingPreset(p);
@@ -2324,7 +2466,8 @@ window.onload = function () {
         // キャラを正面から大きく映す（着せ替え用）
         setPortrait(on) {
             wanderOn = !on;
-            if (!on) { setCameraPreset('iso'); return; }
+            document.body.classList.toggle('portrait', !!on);
+            if (!on) { setCameraPreset('iso'); fitCamera(); return; }
             avatar.path = [];
             avatar.action = 'idle';
             avatar.seatY = 0;

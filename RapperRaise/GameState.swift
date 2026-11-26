@@ -121,6 +121,9 @@ final class GameState: ObservableObject {
     @Published var message = "歩いてポイントを集めよう！"
     @Published var speech: String?
     @Published var eating: String?
+    /// 部屋のキャラが今している動き（"workout" / "dance"）
+    @Published var activity: String?
+    private var lastExercise = Date.distantPast
     @Published var voiceOn: Bool { didSet { UserDefaults.standard.set(voiceOn, forKey: voiceKey) } }
 
     private let key = "rapper-save-v2"
@@ -222,6 +225,53 @@ final class GameState: ObservableObject {
         }
     }
 
+    // MARK: 筋トレ・ダンス（いつでもできる。おなかが減る）
+
+    enum Exercise {
+        case workout, dance
+    }
+
+    func exercise(_ kind: Exercise) {
+        guard Date().timeIntervalSince(lastExercise) > 6 else {
+            message = "ちょっと休憩中…"
+            return
+        }
+        guard data.hunger >= 10 else {
+            message = "おなかがすいて動けない…ごはんをあげよう"
+            talk(hungryLine)
+            return
+        }
+        lastExercise = Date()
+        let beforeAge = age, beforeStage = stage
+        var d = data
+        d.growth += 2
+        switch kind {
+        case .workout:
+            d.hunger = max(0, d.hunger - 6)
+            d.stats.guts += 1
+            d.weightOffset = max(-8, d.weightOffset - 0.2)
+        case .dance:
+            d.hunger = max(0, d.hunger - 5)
+            d.stats.flow += 1
+        }
+        data = d
+        activity = kind == .workout ? "workout" : "dance"
+        let line: String
+        if age < 3 {
+            line = kind == .workout ? "んしょ、んしょ！" : "きゃっきゃっ♪"
+        } else {
+            line = kind == .workout ? ["ふんっ！ふんっ！", "筋肉は裏切らねえ", "あと10回！"].randomElement()!
+                                    : ["ノッてきた！", "このビート最高", "ステップ決まった！"].randomElement()!
+        }
+        talk(line)
+        celebrate(beforeAge: beforeAge, beforeStage: beforeStage,
+                  otherwise: kind == .workout ? "💪 筋トレ！ 成長+2・度胸+1" : "🕺 ダンス！ 成長+2・フロウ+1")
+        Task {
+            try? await Task.sleep(for: .seconds(4.5))
+            activity = nil
+        }
+    }
+
     /// 時間がたつとおなかが減る（6分で1、約10時間でぺこぺこ）
     func refreshHunger() {
         let elapsed = Date().timeIntervalSince(data.lastHungerUpdate)
@@ -300,14 +350,6 @@ final class GameState: ObservableObject {
     func refreshIdle() {
         guard data.created else { return }
         refreshHunger()
-        let interval: TimeInterval = 180
-        let n = Int(Date().timeIntervalSince(data.lastDropCheck) / interval)
-        guard n > 0 else { return }
-        var d = data
-        d.lastDropCheck = d.lastDropCheck.addingTimeInterval(Double(n) * interval)
-        let space = max(0, 12 - d.drops.count)
-        for _ in 0..<min(n, space) { d.drops.append(IdleDrop.random()) }
-        data = d
     }
 
     func collect(_ drop: IdleDrop) {
