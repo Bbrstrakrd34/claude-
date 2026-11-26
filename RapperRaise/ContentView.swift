@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var showRhyme = false
     @State private var showCloset = false
     @State private var showRoom = false
+    @State private var showFood = false
     @State private var confirmReset = false
 
     var body: some View {
@@ -25,7 +26,7 @@ struct ContentView: View {
                     .font(.subheadline)
 
                 if let next = game.nextAgeXP {
-                    let total = game.data.stats.total
+                    let total = game.data.growth
                     ProgressView(value: Double(total - game.currentAgeXP),
                                  total: Double(next - game.currentAgeXP))
                     Text("次の誕生日まで あと \(next - total) XP")
@@ -43,13 +44,18 @@ struct ContentView: View {
                     }
                 }
 
+                HungerGauge(hunger: game.data.hunger)
+                Button("🍽 ごはんをあげる（成長する）") { showFood = true }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.green)
+
                 Text("ポイント: \(game.data.points)").font(.title2.bold())
                 Text(game.message).foregroundStyle(.orange)
                 Text("部屋に落ちた🎤💿💌をタップすると拾えるよ（3分ごとに増える）")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                // ミニゲーム
+                // ミニゲーム（能力が上がる。年齢はごはんで上がる）
                 Button("🥁 リズム練習（1pt）") { showRhythm = true }
                     .buttonStyle(.borderedProminent)
                     .tint(.indigo)
@@ -104,6 +110,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showCloset) {
             ClosetView().environmentObject(game)
+        }
+        .sheet(isPresented: $showFood) {
+            FoodView().environmentObject(game)
         }
         .sheet(isPresented: $showRoom) {
             RoomEditView().environmentObject(game)

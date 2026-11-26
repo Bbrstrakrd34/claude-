@@ -3,6 +3,7 @@ import Combine
 import HealthKit
 import WidgetKit
 import AVFoundation
+import SwiftUI
 
 // MARK: - ウィジェット用の絵文字の肌色
 
@@ -74,6 +75,10 @@ struct SaveData: Codable {
     var room = RoomConfig()
     var drops: [IdleDrop] = []
     var lastDropCheck = Date()
+    var growth = 0               // 成長ポイント（ごはんで増える。年齢はこれで決まる）
+    var hunger: Double = 80      // おなか（100で満腹、0でぺこぺこ）
+    var lastHungerUpdate = Date()
+    var weightOffset: Double = 0 // 食べたもので増減する体重(kg)
 }
 
 /// 項目が足りない古いデータでも、初期値で補って読めるようにする
@@ -98,6 +103,11 @@ extension SaveData {
         room = c.value(.room, d.room)
         drops = c.value(.drops, d.drops)
         lastDropCheck = c.value(.lastDropCheck, d.lastDropCheck)
+        // 前のバージョンでは能力の合計で年齢が決まっていたので、それを引き継ぐ
+        growth = c.value(.growth, stats.total)
+        hunger = c.value(.hunger, d.hunger)
+        lastHungerUpdate = c.value(.lastHungerUpdate, d.lastHungerUpdate)
+        weightOffset = c.value(.weightOffset, d.weightOffset)
     }
 }
 
@@ -108,6 +118,7 @@ final class GameState: ObservableObject {
     @Published var data: SaveData { didSet { save() } }
     @Published var message = "歩いてポイントを集めよう！"
     @Published var speech: String?
+    @Published var eating: String?
     @Published var voiceOn: Bool { didSet { UserDefaults.standard.set(voiceOn, forKey: voiceKey) } }
 
     private let key = "rapper-save-v2"
@@ -139,7 +150,7 @@ final class GameState: ObservableObject {
     /// 各年齢になるのに必要な経験値（ステータス合計）。0歳〜30歳
     static let ageXP: [Int] = (0...30).map { a in Int(0.4 * Double(a * a)) + 2 * a }
 
-    var age: Int { Self.ageXP.lastIndex(where: { data.stats.total >= $0 }) ?? 0 }
+    var age: Int { Self.ageXP.lastIndex(where: { data.growth >= $0 }) ?? 0 }
     var currentAgeXP: Int { Self.ageXP[age] }
     var nextAgeXP: Int? { age + 1 < Self.ageXP.count ? Self.ageXP[age + 1] : nil }
     var stage: Stage { Stage.of(age: age) }
@@ -165,7 +176,7 @@ final class GameState: ObservableObject {
     // MARK: 話しかける
 
     func talk(_ text: String? = nil) {
-        let line = text ?? TalkLines.line(age: age)
+        let line = text ?? (data.hunger < 25 && Bool.random() ? hungryLine : TalkLines.line(age: age))
         speech = line
         guard voiceOn else { return }
         let u = AVSpeechUtterance(string: line)
@@ -174,6 +185,49 @@ final class GameState: ObservableObject {
         u.rate = AVSpeechUtteranceDefaultSpeechRate
         if synth.isSpeaking { synth.stopSpeaking(at: .immediate) }
         synth.speak(u)
+    }
+
+    private var hungryLine: String {
+        switch age {
+        case ..<3: return ["おぎゃー！おぎゃー！", "んまんま…", "ふぇぇ…"].randomElement()!
+        case 3..<13: return ["おなかすいたー！", "ごはんまだー？"].randomElement()!
+        default: return ["腹減った…", "なんか食わせてくれ", "ハラが減ってはバトルできねえ"].randomElement()!
+        }
+    }
+
+    // MARK: ごはん
+
+    func feed(_ food: Food) {
+        guard data.hunger < 95 else {
+            message = "もうおなかいっぱい！"
+            talk(age < 3 ? "ぷいっ" : "もう食べられない…")
+            return
+        }
+        guard pay(food.cost, minStage: .baby) else { return }
+        let beforeAge = age, beforeStage = stage
+        var d = data
+        d.growth += food.growth(forAge: age)
+        d.hunger = min(100, d.hunger + food.fill)
+        d.weightOffset = min(15, max(-8, d.weightOffset + food.weight))
+        data = d
+        withAnimation { eating = food.emoji }
+        talk(age < 3 ? "あむあむ…" : "もぐもぐ… \(food.reaction)")
+        celebrate(beforeAge: beforeAge, beforeStage: beforeStage,
+                  otherwise: "\(food.emoji) \(food.name)を食べた！ 成長+\(food.growth(forAge: beforeAge))")
+        Task {
+            try? await Task.sleep(for: .seconds(2.5))
+            withAnimation { eating = nil }
+        }
+    }
+
+    /// 時間がたつとおなかが減る（6分で1、約10時間でぺこぺこ）
+    func refreshHunger() {
+        let elapsed = Date().timeIntervalSince(data.lastHungerUpdate)
+        guard elapsed > 60 else { return }
+        var d = data
+        d.hunger = max(0, d.hunger - elapsed / 360)
+        d.lastHungerUpdate = Date()
+        data = d
     }
 
     // MARK: 体
@@ -191,7 +245,8 @@ final class GameState: ObservableObject {
     var weightKG: Int {
         let h = Double(heightCM) / 100
         let bmi: Double = age < 3 ? 16 : (age < 12 ? 16.5 : 21)
-        return Int((bmi * data.appearance.build.weightFactor * h * h).rounded())
+        let w = bmi * data.appearance.build.weightFactor * h * h + data.weightOffset * min(1, Double(age) / 15)
+        return max(3, Int(w.rounded()))
     }
 
     // MARK: ミニゲーム
@@ -242,6 +297,7 @@ final class GameState: ObservableObject {
     /// 3分ごとに部屋にアイテムが1つ落ちる（最大12個）
     func refreshIdle() {
         guard data.created else { return }
+        refreshHunger()
         let interval: TimeInterval = 180
         let n = Int(Date().timeIntervalSince(data.lastDropCheck) / interval)
         guard n > 0 else { return }
@@ -340,7 +396,7 @@ final class GameState: ObservableObject {
     /// ウィジェット用のデータを書き出して、再描画を依頼する
     func publishWidget() {
         guard data.created else { return }
-        let total = data.stats.total
+        let total = data.growth
         let progress: Double
         if let next = nextAgeXP {
             progress = Double(total - currentAgeXP) / Double(max(next - currentAgeXP, 1))

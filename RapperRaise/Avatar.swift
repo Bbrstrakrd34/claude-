@@ -317,6 +317,8 @@ struct AvatarView: View {
     private var topC: Color { Color(hex: Palette.cloth[look.topColor]) }
     private var hatC: Color { Color(hex: Palette.cloth[look.hatColor]) }
     private let ink = Color(hex: 0x2B1D14)
+    private let iris = Color(hex: 0x5A3A22)
+    private let lip = Color(hex: 0xB5605A)
     private var s: CGFloat { m.eyeScale }
     private var eyeY: CGFloat { m.headY + m.headH * 0.04 }
     private var mouthY: CGFloat { m.headY + m.headH * 0.30 }
@@ -338,8 +340,19 @@ struct AvatarView: View {
                     .frame(width: 22, height: 30)
                     .position(x: 120 + side * m.headW / 2, y: m.headY + 6)
             }
-            // 顔
+            // あごの下の影
+            Ellipse().fill(.black.opacity(0.16))
+                .frame(width: m.headW * 0.5, height: 16)
+                .blur(radius: 2)
+                .position(x: 120, y: m.headY + m.headH / 2 + 2)
+            // 顔（立体感のある陰影）
             Ellipse().fill(skin)
+                .overlay(
+                    Ellipse().fill(RadialGradient(
+                        colors: [.white.opacity(0.18), .clear, .black.opacity(0.2)],
+                        center: UnitPoint(x: 0.42, y: 0.38),
+                        startRadius: 2, endRadius: m.headW * 0.62))
+                )
                 .frame(width: m.headW, height: m.headH)
                 .position(x: 120, y: m.headY)
             if stage <= .kid { cheeks }
@@ -362,13 +375,21 @@ struct AvatarView: View {
     // 頭の上半分だけの楕円（髪・帽子に使う）
     private func capShape(_ color: Color, fraction: CGFloat, extra: CGFloat = 8) -> some View {
         let h = m.headH + extra
-        return Ellipse().fill(color)
+        return Ellipse().fill(color.gradient)
             .frame(width: m.headW + extra, height: h)
             .mask(alignment: .top) { Rectangle().frame(height: h * fraction) }
             .position(x: 120, y: m.headY)
     }
 
     @ViewBuilder private var hairBack: some View {
+        if stage == .baby {
+            EmptyView()
+        } else {
+            hairBackStyles
+        }
+    }
+
+    @ViewBuilder private var hairBackStyles: some View {
         switch look.hair {
         case .afro:
             Circle().fill(hairC)
@@ -391,6 +412,21 @@ struct AvatarView: View {
     }
 
     @ViewBuilder private var hairFront: some View {
+        if stage == .baby {
+            // 赤ちゃんは髪がうすい
+            if look.hair != .bald {
+                capShape(hairC.opacity(0.5), fraction: 0.26, extra: 2)
+                Capsule().fill(hairC.opacity(0.6))
+                    .frame(width: 6, height: 18)
+                    .rotationEffect(.degrees(20))
+                    .position(x: 122, y: m.headY - m.headH * 0.5)
+            }
+        } else {
+            hairFrontStyles
+        }
+    }
+
+    @ViewBuilder private var hairFrontStyles: some View {
         switch look.hair {
         case .bald:
             Ellipse().fill(.white.opacity(0.25))
@@ -456,10 +492,16 @@ struct AvatarView: View {
             eye(side: side)
                 .position(x: 120 + side * m.headW * 0.2, y: eyeY)
         }
-        // 鼻
-        Capsule().fill(.black.opacity(0.14))
-            .frame(width: 7, height: 16 * min(s, 1.1))
-            .position(x: 120, y: m.headY + m.headH * 0.16)
+        // 鼻（影と小鼻）
+        Capsule().fill(.black.opacity(0.1))
+            .frame(width: 6, height: 16 * min(s, 1.1))
+            .blur(radius: 1)
+            .position(x: 123, y: m.headY + m.headH * 0.13)
+        ForEach([-1.0, 1.0], id: \.self) { side in
+            Ellipse().fill(.black.opacity(0.22))
+                .frame(width: 5, height: 3.5)
+                .position(x: 120 + side * 5, y: m.headY + m.headH * 0.2)
+        }
         mouth
             .position(x: 120, y: mouthY)
     }
@@ -469,20 +511,25 @@ struct AvatarView: View {
         case .round:
             ZStack {
                 Ellipse().fill(.white).frame(width: 17 * s, height: 19 * s)
-                Circle().fill(ink).frame(width: 11 * s, height: 11 * s)
+                Circle().fill(iris).frame(width: 12 * s, height: 12 * s)
+                Circle().fill(.black).frame(width: 6 * s, height: 6 * s)
                 Circle().fill(.white).frame(width: 3.5 * s, height: 3.5 * s).offset(x: 2 * s, y: -2 * s)
+                Capsule().fill(ink).frame(width: 19 * s, height: 2.5 * s).offset(y: -9 * s)
             }
         case .sleepy:
             ZStack {
                 Ellipse().fill(.white).frame(width: 17 * s, height: 12 * s)
-                Circle().fill(ink).frame(width: 9 * s, height: 9 * s).offset(y: 1.5 * s)
+                Circle().fill(iris).frame(width: 9 * s, height: 9 * s).offset(y: 1.5 * s)
+                Circle().fill(.black).frame(width: 4.5 * s, height: 4.5 * s).offset(y: 1.5 * s)
                 Capsule().fill(skin).brightness(-0.12)
                     .frame(width: 19 * s, height: 6 * s).offset(y: -4 * s)
             }
         case .sharp:
             ZStack {
                 Ellipse().fill(.white).frame(width: 19 * s, height: 10 * s)
-                Circle().fill(ink).frame(width: 8 * s, height: 8 * s)
+                Circle().fill(iris).frame(width: 8 * s, height: 8 * s)
+                Circle().fill(.black).frame(width: 4 * s, height: 4 * s)
+                Capsule().fill(ink).frame(width: 20 * s, height: 2.5 * s).offset(y: -5 * s)
             }
             .rotationEffect(.degrees(-8 * side))
         }
@@ -493,18 +540,18 @@ struct AvatarView: View {
         switch look.mouth {
         case .smile:
             Circle().trim(from: 0.08, to: 0.42)
-                .stroke(ink, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                .stroke(lip, style: StrokeStyle(lineWidth: 4, lineCap: .round))
                 .frame(width: w, height: w)
                 .offset(y: -w * 0.35)
         case .neutral:
-            Capsule().fill(ink).frame(width: w * 0.8, height: 4)
+            Capsule().fill(lip).frame(width: w * 0.8, height: 5)
         case .smirk:
-            Capsule().fill(ink).frame(width: w * 0.8, height: 4)
+            Capsule().fill(lip).frame(width: w * 0.8, height: 5)
                 .rotationEffect(.degrees(-12)).offset(x: 4)
         case .grin:
             ZStack {
                 Circle().trim(from: 0, to: 0.5).fill(.white)
-                Circle().trim(from: 0, to: 0.5).stroke(ink, lineWidth: 3)
+                Circle().trim(from: 0, to: 0.5).stroke(lip, lineWidth: 3)
             }
             .frame(width: w * 1.1, height: w * 1.1)
             .offset(y: -w * 0.4)
@@ -551,9 +598,23 @@ struct AvatarView: View {
         let bottomR: CGFloat = look.build == .chubby ? m.bodyW * 0.28 : 6
         UnevenRoundedRectangle(topLeadingRadius: m.bodyW * 0.3, bottomLeadingRadius: bottomR,
                                bottomTrailingRadius: bottomR, topTrailingRadius: m.bodyW * 0.3)
-            .fill(topC)
+            .fill(topC.gradient)
+            .overlay(
+                LinearGradient(colors: [.white.opacity(0.1), .black.opacity(0.18)],
+                               startPoint: .top, endPoint: .bottom)
+                    .clipShape(UnevenRoundedRectangle(topLeadingRadius: m.bodyW * 0.3, bottomLeadingRadius: bottomR,
+                                                      bottomTrailingRadius: bottomR, topTrailingRadius: m.bodyW * 0.3))
+            )
             .frame(width: m.bodyW, height: m.bodyH)
             .position(x: 120, y: m.bodyY)
+        if stage == .baby {
+            // ロンパースのボタン
+            ForEach(0..<3, id: \.self) { i in
+                Circle().fill(.white.opacity(0.9))
+                    .frame(width: 6, height: 6)
+                    .position(x: 120, y: bodyTop + 22 + CGFloat(i) * 14)
+            }
+        }
         switch look.top {
         case .tee:
             Ellipse().fill(skin).brightness(-0.05)

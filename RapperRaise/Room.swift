@@ -157,25 +157,9 @@ struct RoomView: View {
             let avatarSize = 92 * stageScale * game.data.appearance.height.scale
 
             ZStack {
-                // 壁
-                Rectangle()
-                    .fill(Color(hex: RoomPalette.walls[room.wall]))
-                    .frame(width: w, height: h * 0.55)
-                    .position(x: w / 2, y: h * 0.275)
-                // 床
-                Rectangle()
-                    .fill(Color(hex: RoomPalette.floors[room.floor]))
-                    .frame(width: w, height: h * 0.45)
-                    .position(x: w / 2, y: h * 0.775)
-                // 床の線（奥行き）
-                ForEach(1..<6, id: \.self) { i in
-                    Rectangle().fill(.black.opacity(0.06))
-                        .frame(width: w, height: 2)
-                        .position(x: w / 2, y: h * 0.55 + h * 0.45 * CGFloat(i) / 6)
-                }
-                Rectangle().fill(.black.opacity(0.12))
-                    .frame(width: w, height: 4)
-                    .position(x: w / 2, y: h * 0.55)
+                RoomBackground(w: w, h: h,
+                               wall: Color(hex: RoomPalette.walls[room.wall]),
+                               floor: Color(hex: RoomPalette.floors[room.floor]))
 
                 // 奥の家具
                 furniture(front: false, w: w, h: h, room: room)
@@ -188,6 +172,12 @@ struct RoomView: View {
                         .position(x: drop.x * w, y: drop.y * h)
                         .onTapGesture { game.collect(drop) }
                 }
+
+                // 足元の影
+                Ellipse().fill(.black.opacity(0.22))
+                    .frame(width: avatarSize * 0.7, height: avatarSize * 0.14)
+                    .blur(radius: 3)
+                    .position(x: pos.x * w, y: pos.y * h)
 
                 // キャラとふきだし
                 VStack(spacing: 2) {
@@ -205,12 +195,25 @@ struct RoomView: View {
                     AvatarView(look: game.data.appearance, stage: game.stage, size: avatarSize)
                         .scaleEffect(x: facingLeft ? -1 : 1, y: 1)
                         .offset(y: bob ? -3 : 0)
+                        .overlay(alignment: .center) {
+                            if let food = game.eating {
+                                Text(food)
+                                    .font(.system(size: avatarSize * 0.32))
+                                    .offset(x: avatarSize * 0.22, y: avatarSize * 0.08)
+                                    .transition(.scale)
+                            }
+                        }
                         .onTapGesture { game.talk() }
                 }
                 .position(x: pos.x * w, y: pos.y * h - avatarSize * 0.55)
 
                 // 手前の家具
                 furniture(front: true, w: w, h: h, room: room)
+
+                // 部屋のすみを少し暗くして立体感を出す
+                RadialGradient(colors: [.clear, .black.opacity(0.28)],
+                               center: .center, startRadius: w * 0.35, endRadius: w * 0.85)
+                    .allowsHitTesting(false)
             }
         }
         .frame(height: height)
@@ -242,8 +245,15 @@ struct RoomView: View {
             let slot = FurnitureSlot.all[i]
             let item = room.slots[i]
             if item != .none {
+                if slot.y > 0.5 {
+                    Ellipse().fill(.black.opacity(0.2))
+                        .frame(width: slot.size * 0.9, height: slot.size * 0.18)
+                        .blur(radius: 3)
+                        .position(x: slot.x * w, y: slot.y * h + slot.size * 0.05)
+                }
                 Text(item.emoji)
                     .font(.system(size: slot.size))
+                    .shadow(color: .black.opacity(0.25), radius: 2, x: 1, y: 2)
                     .position(x: slot.x * w, y: slot.y * h - slot.size * 0.4)
             }
         }
@@ -278,5 +288,106 @@ struct RoomEditView: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - 部屋の背景（壁・窓・床）
+
+struct RoomBackground: View {
+    let w: CGFloat
+    let h: CGFloat
+    let wall: Color
+    let floor: Color
+
+    private var horizon: CGFloat { h * 0.55 }
+
+    var body: some View {
+        ZStack {
+            // 壁（上が明るく下が暗い）
+            Rectangle().fill(wall)
+                .overlay(LinearGradient(colors: [.white.opacity(0.15), .black.opacity(0.18)],
+                                        startPoint: .top, endPoint: .bottom))
+                .frame(width: w, height: horizon)
+                .position(x: w / 2, y: horizon / 2)
+            // 壁紙のストライプ
+            ForEach(0..<12, id: \.self) { i in
+                Rectangle().fill(.black.opacity(0.035))
+                    .frame(width: w / 24, height: horizon)
+                    .position(x: (CGFloat(i) + 0.5) * w / 12, y: horizon / 2)
+            }
+            window
+            // 床（奥が暗い）
+            Rectangle().fill(floor)
+                .overlay(LinearGradient(colors: [.black.opacity(0.3), .clear, .black.opacity(0.08)],
+                                        startPoint: .top, endPoint: .bottom))
+                .frame(width: w, height: h - horizon)
+                .position(x: w / 2, y: horizon + (h - horizon) / 2)
+            // フローリングの板
+            ForEach(0..<7, id: \.self) { row in
+                let y = horizon + (h - horizon) * CGFloat(row) / 7
+                let rowH = (h - horizon) / 7
+                Rectangle().fill(.black.opacity(0.1))
+                    .frame(width: w, height: 1.5)
+                    .position(x: w / 2, y: y)
+                ForEach(0..<4, id: \.self) { col in
+                    Rectangle().fill(.black.opacity(0.08))
+                        .frame(width: 1.5, height: rowH)
+                        .position(x: (CGFloat(col) + (row % 2 == 0 ? 0.3 : 0.8)) * w / 4, y: y + rowH / 2)
+                }
+            }
+            // 窓から床に差し込む光
+            Ellipse().fill(.white.opacity(0.14))
+                .frame(width: w * 0.5, height: (h - horizon) * 0.5)
+                .blur(radius: 18)
+                .position(x: w * 0.5, y: horizon + (h - horizon) * 0.4)
+            // 幅木
+            Rectangle().fill(.white.opacity(0.9))
+                .overlay(alignment: .bottom) { Rectangle().fill(.black.opacity(0.2)).frame(height: 2) }
+                .frame(width: w, height: 9)
+                .position(x: w / 2, y: horizon - 4)
+        }
+    }
+
+    private var window: some View {
+        let ww = w * 0.3
+        let wh = horizon * 0.5
+        let cx = w * 0.5
+        let cy = horizon * 0.42
+        return ZStack {
+            // 外の景色
+            RoundedRectangle(cornerRadius: 4)
+                .fill(LinearGradient(colors: [Color(hex: 0x7EC8F2), Color(hex: 0xDFF3FF)],
+                                     startPoint: .top, endPoint: .bottom))
+                .frame(width: ww, height: wh)
+            // 遠くのビル
+            HStack(alignment: .bottom, spacing: 3) {
+                ForEach([0.35, 0.55, 0.3, 0.7, 0.45], id: \.self) { r in
+                    Rectangle().fill(Color(hex: 0x8FA6B8)).frame(width: ww / 7, height: wh * r)
+                }
+            }
+            .frame(width: ww, height: wh, alignment: .bottom)
+            .clipped()
+            // 窓枠
+            RoundedRectangle(cornerRadius: 4).stroke(.white, lineWidth: 6)
+                .frame(width: ww, height: wh)
+            Rectangle().fill(.white).frame(width: 4, height: wh)
+            Rectangle().fill(.white).frame(width: ww, height: 4)
+            // カーテン
+            HStack {
+                curtain
+                Spacer()
+                curtain
+            }
+            .frame(width: ww + 34)
+        }
+        .shadow(color: .black.opacity(0.2), radius: 3, y: 2)
+        .position(x: cx, y: cy)
+    }
+
+    private var curtain: some View {
+        RoundedRectangle(cornerRadius: 6)
+            .fill(LinearGradient(colors: [Color(hex: 0xE8DCC8), Color(hex: 0xC9B79C), Color(hex: 0xE8DCC8)],
+                                 startPoint: .leading, endPoint: .trailing))
+            .frame(width: 20, height: horizon * 0.62)
     }
 }
