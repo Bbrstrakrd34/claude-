@@ -83,6 +83,11 @@ struct AppearanceEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            Text("体").font(.headline)
+            ChipRow(title: "身長", selection: $look.height)
+            ChipRow(title: "体格", selection: $look.build)
+
+            Divider()
             Text("顔").font(.headline)
             ColorRow(title: "肌の色", colors: Palette.skins, selection: $look.skin)
             ChipRow(title: "髪型", selection: $look.hair)

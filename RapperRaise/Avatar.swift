@@ -135,6 +135,77 @@ enum ChainStyle: String, OptionEnum {
     }
 }
 
+enum BuildStyle: String, OptionEnum {
+    case slim, normal, muscle, chubby
+    var label: String {
+        switch self {
+        case .slim: return "細身"
+        case .normal: return "ふつう"
+        case .muscle: return "マッチョ"
+        case .chubby: return "ぽっちゃり"
+        }
+    }
+    var widthFactor: CGFloat {
+        switch self {
+        case .slim: return 0.85
+        case .normal: return 1
+        case .muscle: return 1.12
+        case .chubby: return 1.18
+        }
+    }
+    var armWidth: CGFloat {
+        switch self {
+        case .slim: return 16
+        case .normal: return 20
+        case .muscle: return 30
+        case .chubby: return 26
+        }
+    }
+    var weightFactor: Double {
+        switch self {
+        case .slim: return 0.85
+        case .normal: return 1
+        case .muscle: return 1.15
+        case .chubby: return 1.35
+        }
+    }
+}
+
+enum HeightStyle: String, OptionEnum {
+    case short, average, tall
+    var label: String {
+        switch self {
+        case .short: return "小柄"
+        case .average: return "ふつう"
+        case .tall: return "高身長"
+        }
+    }
+    /// 胴体の長さの倍率
+    var bodyFactor: CGFloat {
+        switch self {
+        case .short: return 0.88
+        case .average: return 1
+        case .tall: return 1.12
+        }
+    }
+    /// 部屋の中での大きさの倍率
+    var scale: CGFloat {
+        switch self {
+        case .short: return 0.92
+        case .average: return 1
+        case .tall: return 1.08
+        }
+    }
+    /// 身長(cm)の倍率
+    var cmFactor: Double {
+        switch self {
+        case .short: return 0.94
+        case .average: return 1
+        case .tall: return 1.07
+        }
+    }
+}
+
 // MARK: - 見た目の設定
 
 struct Appearance: Codable, Equatable {
@@ -152,6 +223,8 @@ struct Appearance: Codable, Equatable {
     var topColor = 2
     var chain: ChainStyle = .none
     var earring = false
+    var build: BuildStyle = .normal
+    var height: HeightStyle = .average
 
     static func random() -> Appearance {
         var a = Appearance()
@@ -169,28 +242,65 @@ struct Appearance: Codable, Equatable {
         a.topColor = Int.random(in: 0..<Palette.cloth.count)
         a.chain = ChainStyle.allCases.randomElement()!
         a.earring = Bool.random()
+        a.build = BuildStyle.allCases.randomElement()!
+        a.height = HeightStyle.allCases.randomElement()!
         return a
     }
 }
 
-// MARK: - 成長段階ごとの体の比率
+// 項目が増えても、前のセーブデータを読めるようにする（足りない項目は初期値）
+extension Appearance {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = Appearance()
+        skin = c.value(.skin, d.skin)
+        hair = c.value(.hair, d.hair)
+        hairColor = c.value(.hairColor, d.hairColor)
+        eyes = c.value(.eyes, d.eyes)
+        brows = c.value(.brows, d.brows)
+        mouth = c.value(.mouth, d.mouth)
+        beard = c.value(.beard, d.beard)
+        hat = c.value(.hat, d.hat)
+        hatColor = c.value(.hatColor, d.hatColor)
+        glasses = c.value(.glasses, d.glasses)
+        top = c.value(.top, d.top)
+        topColor = c.value(.topColor, d.topColor)
+        chain = c.value(.chain, d.chain)
+        earring = c.value(.earring, d.earring)
+        build = c.value(.build, d.build)
+        height = c.value(.height, d.height)
+    }
+}
+
+// MARK: - 成長段階・体格ごとの体の比率
 
 struct AvatarMetrics {
     let headW: CGFloat, headH: CGFloat, headY: CGFloat
     let bodyW: CGFloat, bodyH: CGFloat, bodyY: CGFloat
-    let eyeScale: CGFloat
+    let eyeScale: CGFloat, armW: CGFloat
 
-    init(stage: Stage) {
+    init(stage: Stage, look: Appearance) {
+        var hw: CGFloat, hh: CGFloat, hy: CGFloat
+        var bw: CGFloat, bh: CGFloat, by: CGFloat, es: CGFloat
         switch stage {
         case .baby:
-            headW = 128; headH = 122; headY = 125; bodyW = 96; bodyH = 70; bodyY = 230; eyeScale = 1.35
+            hw = 128; hh = 122; hy = 125; bw = 96; bh = 70; by = 230; es = 1.35
         case .kid:
-            headW = 118; headH = 122; headY = 112; bodyW = 120; bodyH = 95; bodyY = 232; eyeScale = 1.2
+            hw = 118; hh = 122; hy = 112; bw = 120; bh = 95; by = 232; es = 1.2
         case .teen:
-            headW = 110; headH = 128; headY = 102; bodyW = 140; bodyH = 115; bodyY = 236; eyeScale = 1.05
+            hw = 110; hh = 128; hy = 102; bw = 140; bh = 115; by = 236; es = 1.05
         case .rookie, .star:
-            headW = 106; headH = 132; headY = 96; bodyW = 162; bodyH = 128; bodyY = 240; eyeScale = 1
+            hw = 106; hh = 132; hy = 96; bw = 162; bh = 128; by = 240; es = 1
         }
+        bw *= look.build.widthFactor
+        if look.build == .chubby { hw *= 1.05 }
+        let top = by - bh / 2
+        bh *= look.height.bodyFactor
+        by = top + bh / 2
+        headW = hw; headH = hh; headY = hy
+        bodyW = bw; bodyH = bh; bodyY = by
+        eyeScale = es
+        armW = look.build.armWidth * (stage == .baby ? 0.7 : 1)
     }
 }
 
@@ -201,7 +311,7 @@ struct AvatarView: View {
     let stage: Stage
     var size: CGFloat = 220
 
-    private var m: AvatarMetrics { AvatarMetrics(stage: stage) }
+    private var m: AvatarMetrics { AvatarMetrics(stage: stage, look: look) }
     private var skin: Color { Color(hex: Palette.skins[look.skin]) }
     private var hairC: Color { Color(hex: Palette.hair[look.hairColor]) }
     private var topC: Color { Color(hex: Palette.cloth[look.topColor]) }
@@ -219,6 +329,7 @@ struct AvatarView: View {
             Rectangle().fill(skin).brightness(-0.05)
                 .frame(width: m.headW * 0.36, height: 46)
                 .position(x: 120, y: bodyTop - 14)
+            arms
             torso
             chain
             // 耳
@@ -424,9 +535,22 @@ struct AvatarView: View {
         }
     }
 
+    private var arms: some View {
+        ForEach([-1.0, 1.0], id: \.self) { side in
+            let x = 120 + side * (m.bodyW / 2 + m.armW / 2 - 8)
+            Capsule().fill(topC).brightness(-0.06)
+                .frame(width: m.armW, height: m.bodyH * 0.9)
+                .position(x: x, y: m.bodyY + 2)
+            Circle().fill(skin)
+                .frame(width: m.armW * 0.95, height: m.armW * 0.95)
+                .position(x: x, y: m.bodyY + m.bodyH * 0.45)
+        }
+    }
+
     @ViewBuilder private var torso: some View {
-        UnevenRoundedRectangle(topLeadingRadius: m.bodyW * 0.3, bottomLeadingRadius: 6,
-                               bottomTrailingRadius: 6, topTrailingRadius: m.bodyW * 0.3)
+        let bottomR: CGFloat = look.build == .chubby ? m.bodyW * 0.28 : 6
+        UnevenRoundedRectangle(topLeadingRadius: m.bodyW * 0.3, bottomLeadingRadius: bottomR,
+                               bottomTrailingRadius: bottomR, topTrailingRadius: m.bodyW * 0.3)
             .fill(topC)
             .frame(width: m.bodyW, height: m.bodyH)
             .position(x: 120, y: m.bodyY)

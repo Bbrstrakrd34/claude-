@@ -60,47 +60,6 @@ struct Stats: Codable {
     var total: Int { lyric + flow + guts + fame }
 }
 
-// MARK: - 練習メニュー
-
-enum Training: CaseIterable, Identifiable {
-    case lyric, rhythm, cypher, live
-    var id: Self { self }
-
-    var title: String {
-        switch self {
-        case .lyric:  return "📝 ことば練習"
-        case .rhythm: return "🥁 リズム練習"
-        case .cypher: return "🔥 サイファー参加"
-        case .live:   return "🎤 ライブ"
-        }
-    }
-
-    var cost: Int {
-        switch self {
-        case .lyric, .rhythm: return 1
-        case .cypher: return 2
-        case .live: return 5
-        }
-    }
-
-    var minStage: Stage {
-        switch self {
-        case .lyric, .rhythm: return .baby
-        case .cypher: return .kid
-        case .live: return .rookie
-        }
-    }
-
-    func apply(_ s: inout Stats) {
-        switch self {
-        case .lyric:  s.lyric += 3
-        case .rhythm: s.flow += 3
-        case .cypher: s.guts += 2; s.flow += 1
-        case .live:   s.fame += 5; s.guts += 2
-        }
-    }
-}
-
 // MARK: - セーブデータ
 
 struct SaveData: Codable {
@@ -112,6 +71,34 @@ struct SaveData: Codable {
     var syncedDay = Date.distantPast
     var syncedSteps = 0
     var todaySteps = 0
+    var room = RoomConfig()
+    var drops: [IdleDrop] = []
+    var lastDropCheck = Date()
+}
+
+/// 項目が足りない古いデータでも、初期値で補って読めるようにする
+extension KeyedDecodingContainer {
+    func value<T: Decodable>(_ key: Key, _ fallback: T) -> T {
+        (try? decodeIfPresent(T.self, forKey: key)) ?? fallback
+    }
+}
+
+extension SaveData {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = SaveData()
+        created = c.value(.created, d.created)
+        name = c.value(.name, d.name)
+        appearance = c.value(.appearance, d.appearance)
+        stats = c.value(.stats, d.stats)
+        points = c.value(.points, d.points)
+        syncedDay = c.value(.syncedDay, d.syncedDay)
+        syncedSteps = c.value(.syncedSteps, d.syncedSteps)
+        todaySteps = c.value(.todaySteps, d.todaySteps)
+        room = c.value(.room, d.room)
+        drops = c.value(.drops, d.drops)
+        lastDropCheck = c.value(.lastDropCheck, d.lastDropCheck)
+    }
 }
 
 // MARK: - ゲーム全体の状態
@@ -189,21 +176,89 @@ final class GameState: ObservableObject {
         synth.speak(u)
     }
 
-    // MARK: 練習
+    // MARK: 体
 
-    func train(_ t: Training) {
-        guard stage >= t.minStage else {
-            message = "\(t.minStage.name)になったらできるよ"; return
+    /// 身長(cm)。年齢と「身長」の設定から決まる
+    var heightCM: Int {
+        let table: [Double] = [50, 75, 86, 95, 102, 108, 115, 121, 127, 133,
+                               138, 144, 150, 156, 161, 165, 168, 170, 171]
+        let base = table[min(age, table.count - 1)]
+        let f = age < 3 ? 1 : data.appearance.height.cmFactor
+        return Int((base * f).rounded())
+    }
+
+    /// 体重(kg)。身長と「体格」から決まる
+    var weightKG: Int {
+        let h = Double(heightCM) / 100
+        let bmi: Double = age < 3 ? 16 : (age < 12 ? 16.5 : 21)
+        return Int((bmi * data.appearance.build.weightFactor * h * h).rounded())
+    }
+
+    // MARK: ミニゲーム
+
+    /// ポイントを払う。足りない・年齢が足りないときは false
+    func pay(_ cost: Int, minStage: Stage) -> Bool {
+        guard stage >= minStage else {
+            message = "\(minStage.name)になったらできるよ"
+            return false
         }
-        guard data.points >= t.cost else {
-            message = "ポイントが足りない…歩こう！🚶"; return
+        guard data.points >= cost else {
+            message = "ポイントが足りない…歩くか、部屋のアイテムを拾おう！"
+            return false
         }
+        data.points -= cost
+        return true
+    }
+
+    /// リズム練習の結果。上がったフロウを返す
+    func rewardRhythm(perfect: Int, good: Int) -> Int {
+        let beforeAge = age, beforeStage = stage
+        let gain = max(1, (perfect * 2 + good) / 3)
+        data.stats.flow += gain
+        celebrate(beforeAge: beforeAge, beforeStage: beforeStage, otherwise: "🥁 リズム練習 フロウ+\(gain)")
+        return gain
+    }
+
+    /// サイファーの結果
+    func rewardCypher(win: Bool) {
         let beforeAge = age, beforeStage = stage
         var d = data
-        d.points -= t.cost
-        t.apply(&d.stats)
+        if win {
+            d.stats.guts += 3
+            d.stats.lyric += 3
+            d.stats.fame += 4
+            d.points += 3
+        } else {
+            d.stats.guts += 2
+            d.stats.lyric += 1
+        }
         data = d
-        celebrate(beforeAge: beforeAge, beforeStage: beforeStage, otherwise: "\(t.title) 完了！")
+        celebrate(beforeAge: beforeAge, beforeStage: beforeStage,
+                  otherwise: win ? "🏆 サイファーで勝った！" : "😤 サイファーで負けた…次は勝つ")
+    }
+
+    // MARK: 放置
+
+    /// 3分ごとに部屋にアイテムが1つ落ちる（最大12個）
+    func refreshIdle() {
+        guard data.created else { return }
+        let interval: TimeInterval = 180
+        let n = Int(Date().timeIntervalSince(data.lastDropCheck) / interval)
+        guard n > 0 else { return }
+        var d = data
+        d.lastDropCheck = d.lastDropCheck.addingTimeInterval(Double(n) * interval)
+        let space = max(0, 12 - d.drops.count)
+        for _ in 0..<min(n, space) { d.drops.append(IdleDrop.random()) }
+        data = d
+    }
+
+    func collect(_ drop: IdleDrop) {
+        var d = data
+        d.drops.removeAll { $0.id == drop.id }
+        d.points += drop.kind.points
+        if drop.kind == .letter { d.stats.fame += 1 }
+        data = d
+        message = "\(drop.kind.emoji) +\(drop.kind.points)pt"
     }
 
     // MARK: リセット
@@ -213,6 +268,7 @@ final class GameState: ObservableObject {
         synth.stopSpeaking(at: .immediate)
         UserDefaults.standard.removeObject(forKey: usedRhymesKey)
         var fresh = SaveData()
+        fresh.lastDropCheck = Date()
         fresh.syncedDay = data.syncedDay
         fresh.syncedSteps = data.syncedSteps
         fresh.todaySteps = data.todaySteps
