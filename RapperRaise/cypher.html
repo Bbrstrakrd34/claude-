@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>ラップバトル</title>
+<link href="https://fonts.googleapis.com/css2?family=DotGothic16&display=swap" rel="stylesheet">
+<style>
+    * { box-sizing: border-box; user-select: none; -webkit-user-select: none; }
+    html, body { margin: 0; padding: 0; background: #11131a; overflow: hidden; height: 100%; }
+    body { display: flex; align-items: flex-start; justify-content: center; }
+    canvas {
+        width: 100%;
+        aspect-ratio: 3 / 2;
+        display: block;
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+    }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<script>
+/*
+ * GBA風ラップバトル（ユーザーのデザインをもとにアプリ用に調整）
+ * 進行（ディス → 言い返し → AI判定）はアプリ側（Swift）が操作する。
+ *   battle.start(config)   … 街で肩がぶつかる → 暗転 → バトル画面へ
+ *   battle.say(lines)      … 下のメッセージ枠に表示（長い文は自動で折り返す）
+ *   battle.flags(list)     … 観客5人の旗（true=青=自分、false=赤=相手）
+ *   battle.hit(who)        … 'player' / 'rival' が点滅してゆれる
+ *   battle.setHP(me, foe)  … 残りHP（丸の数 0〜2）
+ * バトル画面に入ったら webkit.messageHandlers.battle に 'introDone' を送る。
+ */
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const W = 480, H = 320;
+canvas.width = W;
+canvas.height = H;
+ctx.imageSmoothingEnabled = false;
+const FONT = "'DotGothic16', 'Hiragino Kaku Gothic ProN', monospace";
+
+// ---------------------------------------------------------------- 音
+let audioCtx = null, soundEnabled = false, beatTimer = null;
+function initAudio() {
+    try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        soundEnabled = true;
+    } catch (e) {}
+}
+function playTone(freq, duration, type = 'square', gainVal = 0.08, delay = 0) {
+    if (!soundEnabled || !audioCtx) return;
+    const now = audioCtx.currentTime + delay;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, now);
+    gain.gain.setValueAtTime(gainVal, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    osc.start(now); osc.stop(now + duration);
+}
+function playAlertSE() {
+    playTone(180, 0.09, 'sawtooth', 0.12, 0);
+    playTone(587.33, 0.08, 'square', 0.10, 0.12);
+    playTone(880.00, 0.22, 'square', 0.11, 0.20);
+}
+function playWipeSE() {
+    [330, 392, 494, 587, 659, 784, 988, 1175].forEach((n, i) => playTone(n, 0.08, 'square', 0.07, i * 0.065));
+}
+function startBeat() {
+    stopBeat();
+    let step = 0;
+    const bass = [110, 110, 130.8, 146.8, 110, 110, 164.8, 146.8];
+    beatTimer = setInterval(() => {
+        if (!soundEnabled) return;
+        if (step % 2 === 0) playTone(75, 0.09, 'triangle', 0.14);
+        else playTone(220, 0.05, 'sawtooth', 0.05);
+        playTone(bass[step % bass.length], 0.16, 'square', 0.045);
+        step++;
+    }, 240);
+}
+function stopBeat() { if (beatTimer) { clearInterval(beatTimer); beatTimer = null; } }
+canvas.addEventListener('touchstart', initAudio, { passive: true });
+canvas.addEventListener('mousedown', initAudio);
+
+// ---------------------------------------------------------------- 状態
+const game = {
+    phase: 'idle',
+    timer: 0,
+    playerX: 95, playerY: 172, rivalX: 385, rivalY: 166,
+    playerDir: 'right', rivalDir: 'left',
+    shakeX: 0, shakeY: 0,
+    wipeProgress: 0, introProgress: 0,
+    playerHP: 2, rivalHP: 2,
+    lines: [], reveal: 0,
+    flags: [], flagsShown: 0, flagsTimer: 0,
+    hitWho: null, hitTimer: 0,
+    player: { name: 'プレイヤー', lv: 1, hoodie: '#dc2626', skin: '#fed7aa', pants: '#1d4ed8', cap: '#ef4444', hasCap: true, hair: '#3b2618' },
+    rival:  { name: 'ライバル', lv: 1, hoodie: '#3f6259', skin: '#8d5524', pants: '#1e293b', accent: '#ec4899', inner: '#9333ea' }
+};
+
+function post(type) {
+    try { window.webkit.messageHandlers.battle.postMessage(type); } catch (e) {}
+}
+
+// 長い文を、メッセージ枠に入る長さで折り返す
+function wrap(lines, max) {
+    const out = [];
+    lines.forEach(l => {
+        let s = String(l);
+        while (s.length > max) { out.push(s.slice(0, max)); s = s.slice(max); }
+        out.push(s);
+    });
+    return out.slice(0, 3);
+}
+
+window.battle = {
+    start(config) {
+        Object.assign(game.player, config.player || {});
+        Object.assign(game.rival, config.rival || {});
+        stopBeat();
+        game.phase = 'street_walk';
+        game.timer = 0;
+        game.playerX = 95; game.playerY = 172;
+        game.rivalX = 385; game.rivalY = 166;
+        game.playerDir = 'right'; game.rivalDir = 'left';
+        game.shakeX = 0; game.shakeY = 0;
+        game.wipeProgress = 0; game.introProgress = 0;
+        game.playerHP = 2; game.rivalHP = 2;
+        game.flags = []; game.flagsShown = 0;
+        game.lines = []; game.reveal = 0;
+    },
+    say(lines) {
+        game.lines = wrap(lines, 30);
+        game.reveal = 0;
+        playTone(523.25, 0.06, 'square', 0.06);
+    },
+    flags(list) {
+        game.flags = list;
+        game.flagsShown = 0;
+        game.flagsTimer = 0;
+    },
+    clearFlags() { game.flags = []; game.flagsShown = 0; },
+    hit(who) {
+        game.hitWho = who;
+        game.hitTimer = 0;
+        game.shakeX = 6;
+        setTimeout(() => { game.shakeX = 0; }, 160);
+        playTone(220, 0.14, 'sawtooth', 0.1);
+    },
+    setHP(me, foe) { game.playerHP = me; game.rivalHP = foe; },
+    end(win) {
+        stopBeat();
+        if (win) { [523, 659, 784, 1047].forEach((n, i) => playTone(n, 0.14, 'square', 0.09, i * 0.12)); }
+        else { [392, 330, 262].forEach((n, i) => playTone(n, 0.2, 'triangle', 0.1, i * 0.18)); }
+    }
+};
+
+// ---------------------------------------------------------------- 描画ヘルパー
+function pxRect(x, y, w, h, color) {
+    ctx.fillStyle = color;
+    ctx.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h));
+}
+
+function drawOverworldStreet(t) {
+    pxRect(0, 0, W, H, '#94a3b8');
+    pxRect(0, 0, W, 96, '#3b7a57');
+    for (let tx = 0; tx < W; tx += 32) {
+        pxRect(tx + 4, 16, 24, 24, '#2d6a4f');
+        pxRect(tx + 8, 12, 16, 20, '#52b788');
+        pxRect(tx + 12, 40, 8, 12, '#6b4226');
+    }
+    pxRect(24, 34, 140, 66, '#e2e8f0');
+    pxRect(24, 34, 140, 14, '#b91c1c');
+    pxRect(48, 58, 32, 24, '#38bdf8');
+    pxRect(104, 62, 26, 38, '#78350f');
+    pxRect(310, 30, 146, 70, '#cbd5e1');
+    pxRect(310, 30, 146, 16, '#1e3a8a');
+    pxRect(334, 56, 34, 24, '#fde047');
+    pxRect(392, 56, 34, 24, '#fde047');
+    pxRect(0, 100, W, 130, '#cbd5e1');
+    for (let y = 100; y < 230; y += 20) pxRect(0, y, W, 2, '#94a3b8');
+    for (let x = 0; x < W; x += 24) pxRect(x, 100, 2, 130, '#94a3b8');
+    pxRect(0, 230, W, 90, '#334155');
+    for (let x = 16; x < W; x += 48) pxRect(x, 272, 24, 4, '#f8fafc');
+
+    const walkBob = game.phase === 'street_walk' ? Math.abs(Math.sin(t * 14)) * 3 : 0;
+    const P = game.player, R = game.rival;
+    drawChibi(game.playerX, game.playerY - walkBob, {
+        hoodie: P.hoodie, cap: P.hasCap ? P.cap : P.hair, pants: P.pants, skin: P.skin,
+        dir: game.playerDir, step: Math.sin(t * 14), shoes: '#ef4444'
+    });
+    drawChibi(game.rivalX, game.rivalY - walkBob, {
+        hoodie: R.hoodie, cap: R.accent, pants: R.pants, skin: R.skin,
+        dir: game.rivalDir, step: -Math.sin(t * 14), isRival: true, shoes: '#a855f7'
+    });
+
+    if (game.phase === 'bump_alert') {
+        const midX = (game.playerX + game.rivalX) / 2;
+        const midY = game.playerY - 6;
+        if (game.timer < 0.35) {
+            const r = game.timer * 70;
+            ctx.strokeStyle = '#fde047';
+            ctx.lineWidth = 3;
+            for (let i = 0; i < 6; i++) {
+                const a = (i / 6) * Math.PI * 2;
+                ctx.beginPath();
+                ctx.moveTo(midX + Math.cos(a) * 4, midY + Math.sin(a) * 4);
+                ctx.lineTo(midX + Math.cos(a) * (8 + r), midY + Math.sin(a) * (8 + r));
+                ctx.stroke();
+            }
+        }
+        if (game.timer >= 0.15) {
+            drawExclamation(game.rivalX, game.rivalY - 46);
+            drawExclamation(game.playerX, game.playerY - 46);
+        }
+        drawDialog(8, H - 72, W - 16, 64, [
+            'ドンッ！！ 肩が ぶつかった！',
+            R.name + 'が ラップバトルを しかけてきた！'
+        ], true);
+    }
+}
+
+function drawChibi(cx, cy, o) {
+    pxRect(cx - 10, cy + 14, 20, 6, 'rgba(15, 23, 42, 0.45)');
+    const leg = game.phase === 'street_walk' ? Math.round(o.step * 4) : 0;
+    pxRect(cx - 7, cy + 4 + leg, 6, 12, o.pants);
+    pxRect(cx + 1, cy + 4 - leg, 6, 12, o.pants);
+    pxRect(cx - 8, cy + 14 + leg, 7, 4, o.shoes);
+    pxRect(cx + 1, cy + 14 - leg, 7, 4, o.shoes);
+    pxRect(cx - 10, cy - 10, 20, 16, '#0f172a');
+    pxRect(cx - 8, cy - 8, 16, 13, o.hoodie);
+    if (o.isRival) pxRect(cx - 3, cy - 6, 6, 6, '#facc15');
+    pxRect(cx - 10, cy - 26, 20, 18, '#0f172a');
+    pxRect(cx - 8, cy - 24, 16, 14, o.skin);
+    if (o.isRival) {
+        pxRect(cx - 11, cy - 24, 4, 10, o.cap);
+        pxRect(cx + 7, cy - 24, 4, 10, o.cap);
+        pxRect(cx - 8, cy - 27, 16, 4, '#1f2937');
+        pxRect(cx - 7, cy - 18, 14, 4, '#09090b');
+    } else {
+        pxRect(cx - 9, cy - 27, 18, 6, o.cap);
+        const vx = o.dir === 'right' ? cx + 4 : cx - 12;
+        if (game.player.hasCap) pxRect(vx, cy - 23, 8, 3, '#f8fafc');
+    }
+}
+
+function drawExclamation(x, y) {
+    pxRect(x - 11, y - 16, 22, 24, '#0f172a');
+    pxRect(x - 9, y - 14, 18, 20, '#ffffff');
+    pxRect(x - 2, y - 11, 4, 10, '#dc2626');
+    pxRect(x - 2, y + 1, 4, 3, '#dc2626');
+}
+
+// ---------------------------------------------------------------- バトル画面
+function blinkHidden(who) {
+    return game.hitWho === who && game.hitTimer < 0.7 && Math.floor(game.hitTimer / 0.08) % 2 === 0;
+}
+
+function drawBattleScene(t) {
+    const slide = game.phase === 'battle_intro' ? (1 - game.introProgress) * 260 : 0;
+    pxRect(0, 0, W, 118, '#86efac');
+    for (let sx = 8; sx < W; sx += 22) {
+        const col = ['#64748b', '#94a3b8', '#475569', '#b45309'][sx % 4];
+        pxRect(sx, 14 + (sx % 3) * 4, 14, 18, col);
+    }
+    pxRect(0, 36, W, 4, '#64748b');
+    pxRect(0, 76, W, 4, '#64748b');
+    for (let fx = 0; fx < W; fx += 16) pxRect(fx, 36, 2, 42, '#94a3b8');
+    pxRect(0, 80, W, 165, '#f3e5ab');
+
+    drawPlatform(342 + slide, 134, 88, 26);
+    drawPlatform(142 - slide, 224, 106, 30);
+
+    if (!blinkHidden('rival')) drawRivalSprite(342 + slide, 128 + Math.sin(t * 5) * 2);
+    if (!blinkHidden('player')) drawPlayerBack(142 - slide, 222 + Math.cos(t * 5) * 2);
+
+    drawAudience();
+
+    if (game.introProgress > 0.35) {
+        drawStatus(16, 12, { tag: 'あいて', name: game.rival.name, lv: game.rival.lv, hp: game.rivalHP, isPlayer: false });
+    }
+    if (game.introProgress > 0.55) {
+        drawStatus(248, 152, { tag: 'じぶん', name: game.player.name, lv: game.player.lv, hp: game.playerHP, isPlayer: true });
+    }
+    drawDialog(2, 242, W - 4, 76, game.lines, false);
+}
+
+function drawPlatform(cx, cy, rx, ry) {
+    ctx.fillStyle = '#c2a878';
+    ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#8c734b'; ctx.lineWidth = 3; ctx.stroke();
+    ctx.fillStyle = '#d9c296';
+    ctx.beginPath(); ctx.ellipse(cx, cy, rx * 0.72, ry * 0.68, 0, 0, Math.PI * 2); ctx.fill();
+}
+
+function drawRivalSprite(cx, cy) {
+    const R = game.rival;
+    const ox = Math.round(cx - 36), oy = Math.round(cy - 92);
+    pxRect(ox + 12, oy + 66, 14, 20, R.pants);
+    pxRect(ox + 44, oy + 66, 14, 20, R.pants);
+    pxRect(ox + 8, oy + 82, 18, 8, '#a855f7');
+    pxRect(ox + 44, oy + 82, 18, 8, '#a855f7');
+    pxRect(ox + 14, oy + 32, 42, 36, '#0f172a');
+    pxRect(ox + 17, oy + 35, 36, 30, R.hoodie);
+    pxRect(ox + 26, oy + 36, 18, 28, R.inner);
+    pxRect(ox + 30, oy + 44, 10, 10, '#facc15');
+    pxRect(ox + 4, oy + 36, 12, 16, R.hoodie);
+    pxRect(ox + 0, oy + 30, 10, 10, R.skin);
+    pxRect(ox - 4, oy + 24, 8, 12, '#64748b');
+    pxRect(ox + 20, oy + 6, 30, 28, '#0f172a');
+    pxRect(ox + 23, oy + 10, 24, 22, R.skin);
+    pxRect(ox + 16, oy + 10, 7, 16, R.accent);
+    pxRect(ox + 47, oy + 10, 7, 16, R.accent);
+    pxRect(ox + 20, oy + 4, 30, 6, R.accent);
+    pxRect(ox + 24, oy + 15, 22, 6, '#09090b');
+    pxRect(ox + 30, oy + 25, 10, 4, '#ffffff');
+}
+
+function drawPlayerBack(cx, cy) {
+    const P = game.player;
+    const ox = Math.round(cx - 42), oy = Math.round(cy - 102);
+    pxRect(ox + 18, oy + 66, 16, 28, P.pants);
+    pxRect(ox + 44, oy + 66, 16, 28, P.pants);
+    pxRect(ox + 14, oy + 92, 20, 8, '#dc2626');
+    pxRect(ox + 44, oy + 92, 20, 8, '#dc2626');
+    pxRect(ox + 14, oy + 32, 50, 36, '#0f172a');
+    pxRect(ox + 18, oy + 35, 42, 30, P.hoodie);
+    pxRect(ox + 4, oy + 10, 14, 32, P.hoodie);
+    pxRect(ox + 6, oy + 2, 10, 10, P.skin);
+    pxRect(ox + 58, oy + 36, 16, 14, P.hoodie);
+    pxRect(ox + 68, oy + 28, 12, 10, '#64748b');
+    pxRect(ox + 22, oy + 6, 34, 28, '#0f172a');
+    pxRect(ox + 25, oy + 16, 28, 16, P.hair);
+    if (P.hasCap) {
+        pxRect(ox + 24, oy + 6, 30, 14, P.cap);
+        pxRect(ox + 46, oy + 12, 16, 5, '#f8fafc');
+    } else {
+        pxRect(ox + 24, oy + 6, 30, 14, P.hair);
+    }
+}
+
+// 観客5人（旗を上げる）
+function drawAudience() {
+    if (!game.flags.length) return;
+    for (let i = 0; i < 5; i++) {
+        const x = 96 + i * 38, y = 106;
+        pxRect(x - 6, y - 4, 12, 14, ['#475569', '#b45309', '#64748b', '#7c3aed', '#0f766e'][i]);
+        pxRect(x - 5, y - 14, 10, 10, '#fcd9b6');
+        if (i < game.flagsShown) {
+            const blue = game.flags[i];
+            pxRect(x + 6, y - 30, 2, 26, '#334155');
+            pxRect(x + 8, y - 30, 14, 10, blue ? '#2563eb' : '#dc2626');
+        }
+    }
+}
+
+function drawStatus(x, y, info) {
+    const w = 216;
+    const h = info.isPlayer ? 68 : 54;
+    pxRect(x + 12, y - 10, 70, 15, '#1e293b');
+    ctx.fillStyle = '#f8fafc';
+    ctx.font = '11px ' + FONT;
+    ctx.fillText(info.tag, x + 18, y + 1);
+    pxRect(x, y + 4, w, h, '#1e293b');
+    pxRect(x + 3, y + 7, w - 6, h - 10, '#f8f6e8');
+
+    ctx.fillStyle = '#0f172a';
+    ctx.font = 'bold 16px ' + FONT;
+    let name = String(info.name);
+    if (name.length > 9) name = name.slice(0, 9) + '…';
+    ctx.fillText(name, x + 12, y + 26);
+    ctx.font = 'bold 13px ' + FONT;
+    ctx.fillText('Lv.' + info.lv, x + w - 58, y + 26);
+
+    // HP（丸2つ）
+    const barY = y + 34;
+    pxRect(x + 22, barY - 2, 120, 15, '#334155');
+    ctx.fillStyle = '#facc15';
+    ctx.font = 'bold 11px ' + FONT;
+    ctx.fillText('HP', x + 28, barY + 10);
+    for (let i = 0; i < 2; i++) {
+        const cx = x + 66 + i * 26, cy = barY + 5;
+        ctx.beginPath();
+        ctx.arc(cx, cy, 7, 0, Math.PI * 2);
+        ctx.fillStyle = i < info.hp ? (info.hp === 1 ? '#ef4444' : '#22c55e') : '#1e293b';
+        ctx.fill();
+        ctx.strokeStyle = '#f8fafc';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+    }
+    if (info.isPlayer) {
+        ctx.fillStyle = '#334155';
+        ctx.font = '11px ' + FONT;
+        ctx.fillText('ME', x + 46, y + 60);
+        pxRect(x + 28, y + h - 4, w - 34, 4, '#38bdf8');
+    }
+}
+
+function drawDialog(x, y, w, h, lines, full) {
+    pxRect(x, y, w, h, '#991b1b');
+    pxRect(x + 3, y + 3, w - 6, h - 6, '#f8fafc');
+    pxRect(x + 6, y + 6, w - 12, h - 12, '#1e3a4c');
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '14px ' + FONT;
+    let left = full ? 9999 : Math.floor(game.reveal);
+    const step = full ? 22 : 20;
+    lines.forEach((line, i) => {
+        const shown = line.slice(0, Math.max(0, left));
+        left -= line.length;
+        ctx.fillText(shown, x + 16, y + 24 + i * step);
+    });
+}
+
+// ---------------------------------------------------------------- ループ
+let last = performance.now();
+function loop(now) {
+    requestAnimationFrame(loop);
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    const t = now / 1000;
+    game.timer += dt;
+    game.reveal += dt * 32;
+    game.hitTimer += dt;
+    if (game.flags.length && game.flagsShown < 5) {
+        game.flagsTimer += dt;
+        if (game.flagsTimer > 0.4) { game.flagsTimer = 0; game.flagsShown++; playTone(game.flags[game.flagsShown - 1] ? 660 : 330, 0.08, 'square', 0.07); }
+    }
+
+    if (game.phase === 'street_walk') {
+        game.playerX += 92 * dt;
+        game.rivalX -= 92 * dt;
+        if (game.rivalX - game.playerX <= 22) {
+            game.phase = 'bump_alert';
+            game.timer = 0;
+            playAlertSE();
+        }
+    } else if (game.phase === 'bump_alert') {
+        if (game.timer < 0.25) {
+            game.shakeX = (Math.random() - 0.5) * 10;
+            game.shakeY = (Math.random() - 0.5) * 8;
+        } else { game.shakeX = 0; game.shakeY = 0; }
+        if (game.timer >= 2.2) { game.phase = 'encounter_wipe'; game.timer = 0; playWipeSE(); }
+    } else if (game.phase === 'encounter_wipe') {
+        game.wipeProgress = Math.min(1, game.timer / 1.15);
+        if (game.wipeProgress >= 1) { game.phase = 'battle_intro'; game.timer = 0; startBeat(); }
+    } else if (game.phase === 'battle_intro') {
+        game.introProgress = Math.min(1, game.timer / 0.85);
+        if (game.introProgress >= 1) { game.phase = 'battle_play'; post('introDone'); }
+    }
+
+    ctx.save();
+    ctx.translate(game.shakeX, game.shakeY);
+    if (game.phase === 'idle') {
+        pxRect(0, 0, W, H, '#0f172a');
+    } else if (game.phase === 'street_walk' || game.phase === 'bump_alert' || game.phase === 'encounter_wipe') {
+        drawOverworldStreet(t);
+        if (game.phase === 'encounter_wipe') {
+            if (game.wipeProgress < 0.42) {
+                if (Math.sin(game.wipeProgress * Math.PI * 10) > 0) pxRect(0, 0, W, H, 'rgba(255,255,255,0.78)');
+            } else {
+                const r = (game.wipeProgress - 0.42) / 0.58;
+                const sh = Math.ceil((H / 2) * r);
+                pxRect(0, 0, W, sh, '#09090b');
+                pxRect(0, H - sh, W, sh, '#09090b');
+            }
+        }
+    } else {
+        drawBattleScene(t);
+    }
+    ctx.restore();
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

@@ -1,5 +1,7 @@
 import SwiftUI
-import CoreGraphics
+import Combine
+import UIKit
+import WebKit
 #if canImport(FoundationModels)
 import FoundationModels
 #endif
@@ -43,7 +45,7 @@ enum Disses {
 
     static func pick(age: Int) -> [String] {
         let pool = age < 13 ? kid : (age < 18 ? teen : adult)
-        return Array(pool.shuffled().prefix(2))
+        return Array(pool.shuffled().prefix(3))
     }
 }
 
@@ -116,418 +118,291 @@ enum AIBattleJudge {
 }
 #endif
 
-// MARK: - サイファー（レトロRPG風の2ラウンド制MCバトル）
+// MARK: - バトル画面（cypher.html を表示する）
+
+struct BattleWebView: UIViewRepresentable {
+    let controller: BattleController
+
+    func makeUIView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.mediaTypesRequiringUserActionForPlayback = []
+        config.userContentController.add(controller, name: "battle")
+        let web = WKWebView(frame: .zero, configuration: config)
+        web.isOpaque = false
+        web.scrollView.isScrollEnabled = false
+        web.navigationDelegate = controller
+        controller.web = web
+        if let url = Bundle.main.url(forResource: "cypher", withExtension: "html") {
+            web.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+        }
+        return web
+    }
+
+    func updateUIView(_ web: WKWebView, context: Context) {}
+}
+
+/// バトル画面(JavaScript)とのやりとり
+@MainActor
+final class BattleController: NSObject, ObservableObject, WKNavigationDelegate, WKScriptMessageHandler {
+    weak var web: WKWebView?
+    private var loaded = false
+    private var queue: [String] = []
+    @Published var introDone = false
+
+    func run(_ js: String) {
+        guard loaded, let web else {
+            queue.append(js)
+            return
+        }
+        web.evaluateJavaScript(js, completionHandler: nil)
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        loaded = true
+        let pending = queue
+        queue = []
+        for js in pending { webView.evaluateJavaScript(js, completionHandler: nil) }
+    }
+
+    func userContentController(_ userContentController: WKUserContentController,
+                               didReceive message: WKScriptMessage) {
+        if let s = message.body as? String, s == "introDone" { introDone = true }
+    }
+
+    func say(_ lines: [String]) {
+        run("battle.say(\(Self.json(lines)))")
+    }
+
+    static func json<T: Encodable>(_ v: T) -> String {
+        guard let d = try? JSONEncoder().encode(v), let s = String(data: d, encoding: .utf8) else { return "null" }
+        return s
+    }
+}
+
+// MARK: - サイファー（GBA風・HP2つの言い合いバトル）
 
 struct CypherView: View {
     @EnvironmentObject var game: GameState
     @Environment(\.dismiss) private var dismiss
+    @StateObject private var battle = BattleController()
 
-    enum Phase { case ready, intro, talking, command, input, judging, flags, result }
+    enum Phase { case ready, intro, rivalTurn, playerTurn, judging, result }
 
     @State private var phase: Phase = .ready
     @State private var round = 0
-    @State private var opponentLook = Appearance.random()
     @State private var opponentName = Disses.names.randomElement()!
     @State private var disses: [String] = []
-    @State private var typed = ""
     @State private var reply = ""
-    @State private var votes: [Int] = []
-    @State private var comment = ""
-    @State private var flagIsBlue: [Bool] = []
-    @State private var shownFlags = 0
-    @State private var mySprite: Image?
-    @State private var foeSprite: Image?
+    @State private var myHP = 2
+    @State private var foeHP = 2
     @State private var won = false
     @State private var notice = ""
-    @State private var foeHype: Double = 1      // 相手の「会場の支持」ゲージ（0〜1）
-    @State private var myHype: Double = 1       // 自分のゲージ
-    @State private var spritesIn = false        // 登場アニメーション
-    @State private var foeHit = false           // ダメージで点滅
-    @State private var myHit = false
-    @State private var flash = false
     @FocusState private var focused: Bool
 
-    private var blueTotal: Int { votes.reduce(0, +) }
-    private var redTotal: Int { votes.count * 5 - blueTotal }
-
-    // レトロゲーム風の色
-    private let ink = Color(hex: 0x202028)
-    private let paper = Color(hex: 0xF8F8F0)
-    private let frame = Color(hex: 0x3A4A6B)
+    private struct Fighter: Encodable {
+        let name: String
+        let lv: Int
+        let hoodie: String
+        let skin: String
+        let pants: String
+        var cap: String? = nil
+        var hasCap: Bool? = nil
+        var hair: String? = nil
+        var accent: String? = nil
+        var inner: String? = nil
+    }
+    private struct Config: Encodable {
+        let player: Fighter
+        let rival: Fighter
+    }
 
     var body: some View {
-        ZStack {
-            Color(hex: 0x101018).ignoresSafeArea()
-            VStack(spacing: 0) {
-                field
-                bottomPanel
-            }
-            if flash {
-                Color.white.ignoresSafeArea().transition(.opacity)
-            }
-        }
-        .font(.system(.body, design: .monospaced).bold())
-        .onAppear(perform: prepare)
-    }
-
-    // MARK: バトルフィールド
-
-    private var field: some View {
-        GeometryReader { geo in
-            let w = geo.size.width
-            let h = geo.size.height
-            ZStack {
-                // 背景（上が明るい空、下が草地）
-                LinearGradient(colors: [Color(hex: 0xF0F4E8), Color(hex: 0xD8E8C0), Color(hex: 0xB8D898)],
-                               startPoint: .top, endPoint: .bottom)
-                // 横のスジ（レトロな雰囲気）
-                VStack(spacing: 6) {
-                    ForEach(0..<40, id: \.self) { _ in
-                        Rectangle().fill(Color.white.opacity(0.18)).frame(height: 2)
-                    }
-                }
-
-                // 相手の足場とキャラ（右上）
-                Ellipse().fill(Color(hex: 0x98C070))
-                    .overlay(Ellipse().stroke(Color(hex: 0x6E9850), lineWidth: 3))
-                    .frame(width: w * 0.46, height: h * 0.1)
-                    .position(x: w * 0.72, y: h * 0.42)
-                sprite(foeSprite)
-                    .scaleEffect(x: -1, y: 1)
-                    .frame(width: w * 0.34, height: h * 0.36)
-                    .opacity(foeHit ? 0.15 : 1)
-                    .position(x: spritesIn ? w * 0.72 : w * 1.4, y: h * 0.27)
-
-                // 自分の足場とキャラ（左下）
-                Ellipse().fill(Color(hex: 0x98C070))
-                    .overlay(Ellipse().stroke(Color(hex: 0x6E9850), lineWidth: 3))
-                    .frame(width: w * 0.56, height: h * 0.12)
-                    .position(x: w * 0.28, y: h * 0.92)
-                sprite(mySprite)
-                    .frame(width: w * 0.42, height: h * 0.44)
-                    .opacity(myHit ? 0.15 : 1)
-                    .position(x: spritesIn ? w * 0.28 : w * -0.4, y: h * 0.74)
-
-                // 相手のステータス枠（左上）
-                statusBox(name: opponentName, hype: foeHype, showNumbers: false)
-                    .frame(width: w * 0.52)
-                    .position(x: w * 0.3, y: h * 0.11)
-
-                // 自分のステータス枠（右下）
-                statusBox(name: game.data.name, hype: myHype, showNumbers: true)
-                    .frame(width: w * 0.54)
-                    .position(x: w * 0.71, y: h * 0.62)
-
-                // 観客の旗
-                if phase == .flags {
-                    flagsRow
-                        .padding(10)
-                        .background(paper.opacity(0.92), in: RoundedRectangle(cornerRadius: 10))
-                        .position(x: w * 0.5, y: h * 0.45)
-                }
-
-                // ラウンド表示と閉じるボタン
-                HStack {
-                    Text("ROUND \(min(round + 1, 2))/2")
-                        .font(.system(.caption, design: .monospaced).bold())
-                        .padding(.horizontal, 8).padding(.vertical, 4)
-                        .background(ink, in: Capsule())
-                        .foregroundStyle(paper)
-                    Spacer()
-                    Button { dismiss() } label: {
-                        Image(systemName: "xmark")
-                            .font(.headline)
-                            .foregroundStyle(paper)
-                            .frame(width: 34, height: 34)
-                            .background(ink, in: Circle())
-                    }
-                }
-                .padding(.horizontal, 12)
-                .position(x: w / 2, y: h * 0.025 + 14)
-            }
-        }
-    }
-
-    private func sprite(_ image: Image?) -> some View {
-        (image ?? Image(systemName: "person.fill"))
-            .resizable()
-            .interpolation(.none)
-            .scaledToFit()
-    }
-
-    private func statusBox(name: String, hype: Double, showNumbers: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(spacing: 0) {
             HStack {
-                Text(name).lineLimit(1)
+                Text("🔥 サイファー").font(.headline)
                 Spacer()
-                Text("Lv\(game.age)")
+                Button("閉じる") { dismiss() }
             }
-            .font(.system(.subheadline, design: .monospaced).bold())
-            HStack(spacing: 6) {
-                Text("HYPE")
-                    .font(.system(size: 10, weight: .heavy, design: .monospaced))
-                    .foregroundStyle(Color(hex: 0xF8C030))
-                    .padding(.horizontal, 4)
-                    .background(ink, in: RoundedRectangle(cornerRadius: 3))
-                HypeBar(value: hype)
-            }
-            if showNumbers {
-                Text("\(Int((hype * 50).rounded()))/ 50")
-                    .font(.system(.caption, design: .monospaced).bold())
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-            }
-        }
-        .foregroundStyle(ink)
-        .padding(10)
-        .background(paper, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(ink, lineWidth: 3))
-    }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
 
-    private var flagsRow: some View {
-        VStack(spacing: 6) {
-            HStack(spacing: 12) {
-                ForEach(0..<5, id: \.self) { i in
-                    VStack(spacing: 0) {
-                        Rectangle()
-                            .fill(flagColor(i))
-                            .frame(width: 22, height: 15)
-                            .offset(y: i < shownFlags ? 0 : 14)
-                        Text("🧍").font(.system(size: 28))
-                    }
-                }
-            }
-            if shownFlags == 5 {
-                Text("「\(comment)」").font(.system(.caption, design: .monospaced).bold()).foregroundStyle(ink)
-            }
+            BattleWebView(controller: battle)
+                .aspectRatio(3 / 2, contentMode: .fit)
+
+            panel
+                .padding(16)
+            Spacer(minLength: 0)
+        }
+        .background(Color(hex: 0x11131A).ignoresSafeArea())
+        .onAppear { disses = Disses.pick(age: game.age) }
+        .onChange(of: battle.introDone) { _, done in
+            if done && phase == .intro { Task { await rivalTurn() } }
         }
     }
 
-    private func flagColor(_ i: Int) -> Color {
-        guard i < shownFlags, i < flagIsBlue.count else { return .clear }
-        return flagIsBlue[i] ? .blue : .red
-    }
+    // MARK: 下の操作パネル
 
-    // MARK: 下のパネル（文字ボックス＋コマンド）
-
-    private var bottomPanel: some View {
-        VStack(spacing: 10) {
-            switch phase {
-            case .ready:
-                messageBox("\(game.data.name)は サイファーに さんかする？\n（2pt つかいます）")
-                HStack(spacing: 10) {
-                    commandButton("🔥 たたかう") {
-                        guard game.pay(2, minStage: .kid) else {
-                            notice = game.message
-                            return
-                        }
-                        Task { await startBattle() }
-                    }
-                    commandButton("🏃 やめる") { dismiss() }
-                }
+    @ViewBuilder private var panel: some View {
+        switch phase {
+        case .ready:
+            VStack(spacing: 12) {
+                Text("街でライバルと肩がぶつかる…！\n言い返して観客の旗を取れ。先にHPが2つなくなったほうの負け。")
+                    .font(.callout)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.white.opacity(0.85))
+                pixelButton("▶ バトル開始（2pt）", color: Color(hex: 0xDC2626)) { start() }
                 if !notice.isEmpty {
-                    Text(notice).foregroundStyle(Color(hex: 0xF8C030)).font(.caption)
+                    Text(notice).foregroundStyle(.yellow).font(.caption)
                 }
-            case .intro, .talking, .judging, .flags:
-                messageBox(typed)
-                if phase == .judging {
-                    ProgressView().tint(paper)
-                }
-            case .command:
-                HStack(spacing: 10) {
-                    messageBox("\(game.data.name)は\nどうする？")
-                    VStack(spacing: 8) {
-                        commandButton("🎤 いいかえす") {
-                            phase = .input
-                            focused = true
-                        }
-                        commandButton("🏃 にげる") { forfeit() }
-                    }
-                    .frame(width: 150)
-                }
-            case .input:
-                messageBox(typed)
+            }
+        case .intro, .rivalTurn:
+            Text("…").foregroundStyle(.white.opacity(0.6))
+        case .playerTurn:
+            VStack(spacing: 10) {
                 TextField("言い返せ！", text: $reply, axis: .vertical)
                     .lineLimit(2...3)
-                    .padding(10)
-                    .background(paper, in: RoundedRectangle(cornerRadius: 8))
-                    .foregroundStyle(ink)
+                    .padding(12)
+                    .background(Color(hex: 0xF8F6E8), in: RoundedRectangle(cornerRadius: 8))
+                    .foregroundStyle(Color(hex: 0x0F172A))
                     .focused($focused)
-                commandButton("🎤 いいかえす！") { submit() }
-                    .disabled(reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            case .result:
-                messageBox(won ? "\(game.data.name)の しょうり！\n会場は だいもりあがり！ +3pt"
-                               : "\(game.data.name)は まけてしまった…\nつぎは かてる！")
                 HStack(spacing: 10) {
-                    commandButton("🔁 もう1戦") { rematch() }
-                    commandButton("🚪 もどる") { dismiss() }
+                    pixelButton("▶ いいかえす", color: Color(hex: 0x2563EB)) { submit() }
+                        .disabled(reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    pixelButton("にげる", color: Color(hex: 0x475569)) { forfeit() }
+                }
+            }
+        case .judging:
+            HStack(spacing: 10) {
+                ProgressView().tint(.white)
+                Text("観客が判定中…").foregroundStyle(.white)
+            }
+        case .result:
+            VStack(spacing: 12) {
+                Text(won ? "🏆 勝利！ 度胸・リリック・人気アップ ＋3pt" : "😤 負けた… 度胸とリリックが少し上がった")
+                    .foregroundStyle(.white)
+                HStack(spacing: 10) {
+                    pixelButton("もう1戦", color: Color(hex: 0xDC2626)) { rematch() }
+                    pixelButton("もどる", color: Color(hex: 0x475569)) { dismiss() }
                 }
             }
         }
-        .padding(14)
-        .frame(maxWidth: .infinity)
-        .background(frame)
     }
 
-    private func messageBox(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 17, weight: .bold, design: .monospaced))
-            .foregroundStyle(ink)
-            .frame(maxWidth: .infinity, minHeight: 84, alignment: .topLeading)
-            .padding(12)
-            .background(paper, in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(hex: 0xC8A048), lineWidth: 4))
-    }
-
-    private func commandButton(_ title: String, action: @escaping () -> Void) -> some View {
+    private func pixelButton(_ title: String, color: Color, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 16, weight: .heavy, design: .monospaced))
-                .foregroundStyle(ink)
-                .frame(maxWidth: .infinity, minHeight: 44)
-                .background(paper, in: RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(ink, lineWidth: 3))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, minHeight: 46)
+                .background(color, in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(hex: 0x64748B), lineWidth: 2))
+                .shadow(color: Color(hex: 0x0F172A), radius: 0, x: 0, y: 3)
         }
     }
 
     // MARK: 進行
 
-    private func prepare() {
-        disses = Disses.pick(age: game.age)
-        mySprite = pixel(game.data.appearance)
-        foeSprite = pixel(opponentLook)
-    }
-
-    /// キャラを小さく描いてから拡大して、ドット絵っぽくする
-    private func pixel(_ look: Appearance) -> Image? {
-        let renderer = ImageRenderer(content: AvatarView(look: look, stage: game.stage, size: 40))
-        renderer.scale = 1
-        guard let cg = renderer.cgImage else { return nil }
-        return Image(decorative: cg, scale: 1)
-    }
-
-    private func startBattle() async {
-        phase = .intro
-        // 画面がピカッと光ってから、両者が登場
-        for _ in 0..<2 {
-            withAnimation(.easeInOut(duration: 0.12)) { flash = true }
-            try? await Task.sleep(for: .milliseconds(140))
-            withAnimation(.easeInOut(duration: 0.12)) { flash = false }
-            try? await Task.sleep(for: .milliseconds(140))
+    private func start() {
+        guard game.pay(2, minStage: .kid) else {
+            notice = game.message
+            return
         }
-        withAnimation(.easeOut(duration: 0.7)) { spritesIn = true }
-        await type("\(opponentName)（\(game.age)さい）が\nバトルを いどんできた！")
-        try? await Task.sleep(for: .seconds(1))
-        await opponentTurn()
+        let a = game.data.appearance
+        let hex = Room3DView.hex
+        let player = Fighter(
+            name: game.data.name, lv: game.age,
+            hoodie: hex(Palette.cloth[a.topColor]),
+            skin: hex(Palette.skins[a.skin]),
+            pants: "#1d4ed8",
+            cap: hex(Palette.cloth[a.hatColor]),
+            hasCap: a.hat != .none,
+            hair: hex(Palette.hair[a.hairColor])
+        )
+        let r = Appearance.random()
+        let rival = Fighter(
+            name: opponentName, lv: game.age,
+            hoodie: hex(Palette.cloth[r.topColor]),
+            skin: hex(Palette.skins[r.skin]),
+            pants: "#1e293b",
+            accent: ["#ec4899", "#22d3ee", "#facc15", "#a3e635"].randomElement()!,
+            inner: hex(Palette.cloth[r.hatColor])
+        )
+        battle.introDone = false
+        phase = .intro
+        battle.run("battle.start(\(BattleController.json(Config(player: player, rival: rival))))")
     }
 
-    private func opponentTurn() async {
-        phase = .talking
-        await type("\(opponentName)の ディス！\n「\(disses[round])」")
-        try? await Task.sleep(for: .milliseconds(600))
-        await blink(me: true)
-        phase = .command
+    private func rivalTurn() async {
+        phase = .rivalTurn
+        let diss = disses.isEmpty ? "お前のラップ、聞こえねえな" : disses[round % disses.count]
+        battle.say(["\(opponentName)の ディス！", "「\(diss)」"])
+        try? await Task.sleep(for: .seconds(Double(diss.count) / 32 + 1.4))
+        battle.run("battle.hit('player')")
+        try? await Task.sleep(for: .seconds(0.6))
+        battle.say(["\(game.data.name)は どう いいかえす？"])
+        phase = .playerTurn
+        focused = true
     }
 
     private func submit() {
         let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         focused = false
+        let diss = disses.isEmpty ? "" : disses[round % disses.count]
         Task {
             phase = .judging
-            await type("\(game.data.name)の いいかえし！\n「\(text)」")
-            let (v, c) = await BattleJudge.judge(diss: disses[round], reply: text, age: game.age)
-            votes.append(v)
-            comment = c
-            flagIsBlue = (Array(repeating: true, count: v) + Array(repeating: false, count: 5 - v)).shuffled()
-            shownFlags = 0
-            phase = .flags
-            typed = "かんきゃくの はんてい！"
-            for i in 1...5 {
-                try? await Task.sleep(for: .milliseconds(420))
-                withAnimation(.spring) { shownFlags = i }
-            }
-            try? await Task.sleep(for: .seconds(1))
-            // 旗の数だけゲージが減る
-            withAnimation(.easeInOut(duration: 0.8)) {
-                foeHype = max(0, foeHype - Double(v) / 10)
-                myHype = max(0, myHype - Double(5 - v) / 10)
-            }
-            if v >= 3 { await blink(me: false) } else { await blink(me: true) }
-            typed = v >= 3 ? "かいしんの いっぱつ！ 会場がわいた！" : (v == 0 ? "まったく ひびかなかった…" : "あまり ひびかなかった…")
-            try? await Task.sleep(for: .seconds(1.5))
-            reply = ""
-            if round == 0 {
-                round = 1
-                await opponentTurn()
+            battle.say(["\(game.data.name)の いいかえし！", "「\(text)」"])
+            let (v, comment) = await BattleJudge.judge(diss: diss, reply: text, age: game.age)
+            try? await Task.sleep(for: .seconds(max(1.2, Double(text.count) / 32)))
+            let flags = (Array(repeating: true, count: v) + Array(repeating: false, count: 5 - v)).shuffled()
+            battle.run("battle.flags(\(BattleController.json(flags)))")
+            try? await Task.sleep(for: .seconds(2.4))
+            if v >= 3 {
+                foeHP -= 1
+                battle.run("battle.hit('rival')")
+                battle.say(["観客 あお\(v) － あか\(5 - v)", "「\(comment)」 \(opponentName)に きいた！"])
             } else {
-                won = blueTotal >= 6
-                game.rewardCypher(win: won)
-                phase = .result
+                myHP -= 1
+                battle.run("battle.hit('player')")
+                battle.say(["観客 あお\(v) － あか\(5 - v)", "「\(comment)」 \(opponentName)の ペースだ…"])
             }
-        }
-    }
-
-    private func blink(me: Bool) async {
-        for _ in 0..<3 {
-            if me { myHit = true } else { foeHit = true }
-            try? await Task.sleep(for: .milliseconds(90))
-            myHit = false
-            foeHit = false
-            try? await Task.sleep(for: .milliseconds(90))
+            battle.run("battle.setHP(\(myHP), \(foeHP))")
+            try? await Task.sleep(for: .seconds(2.4))
+            battle.run("battle.clearFlags()")
+            reply = ""
+            if myHP <= 0 || foeHP <= 0 {
+                finish()
+            } else {
+                round += 1
+                await rivalTurn()
+            }
         }
     }
 
     private func forfeit() {
-        won = false
-        game.rewardCypher(win: false)
-        phase = .result
+        myHP = 0
+        battle.run("battle.setHP(0, \(foeHP))")
+        finish()
     }
 
-    private func type(_ s: String) async {
-        typed = ""
-        for ch in s {
-            typed.append(ch)
-            try? await Task.sleep(for: .milliseconds(35))
-        }
+    private func finish() {
+        won = foeHP <= 0 && myHP > 0
+        game.rewardCypher(win: won)
+        battle.run("battle.end(\(won))")
+        battle.say(won ? ["\(opponentName)は マイクを おとした！", "\(game.data.name)の しょうり！"]
+                       : ["\(game.data.name)は いいかえせなかった…", "つぎは ぜったい かつ！"])
+        phase = .result
     }
 
     private func rematch() {
         round = 0
-        votes = []
-        comment = ""
-        typed = ""
+        myHP = 2
+        foeHP = 2
         reply = ""
         notice = ""
-        shownFlags = 0
-        flagIsBlue = []
-        foeHype = 1
-        myHype = 1
-        spritesIn = false
-        opponentLook = Appearance.random()
         opponentName = Disses.names.randomElement()!
-        prepare()
+        disses = Disses.pick(age: game.age)
         phase = .ready
-    }
-}
-
-// MARK: - HYPEゲージ（減ると緑→黄→赤）
-
-struct HypeBar: View {
-    let value: Double
-
-    private var color: Color {
-        value > 0.5 ? Color(hex: 0x58D068) : (value > 0.2 ? Color(hex: 0xF8C030) : Color(hex: 0xE85040))
-    }
-
-    var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule().fill(Color(hex: 0x505860))
-                Capsule().fill(color)
-                    .frame(width: max(0, geo.size.width * value))
-            }
-        }
-        .frame(height: 9)
-        .overlay(Capsule().stroke(Color(hex: 0x202028), lineWidth: 2))
     }
 }
