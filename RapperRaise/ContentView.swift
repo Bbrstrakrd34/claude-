@@ -16,7 +16,14 @@ struct ContentView: View {
         ScrollView {
             VStack(spacing: 14) {
                 // 部屋（キャラがうろうろしている）
-                RoomView()
+                if Room3DView.isAvailable {
+                    Room3DView()
+                        .frame(height: 330)
+                        .overlay { DropsOverlay() }
+                        .clipShape(RoundedRectangle(cornerRadius: 20))
+                } else {
+                    RoomView()
+                }
 
                 Text(game.data.name).font(.title.bold())
                 Text("\(game.age)歳・\(game.stage.name)" + (game.style.map { "・\($0.rawValue)" } ?? ""))
@@ -114,8 +121,13 @@ struct ContentView: View {
         .sheet(isPresented: $showFood) {
             FoodView().environmentObject(game)
         }
-        .sheet(isPresented: $showRoom) {
+        .sheet(isPresented: Binding(get: { showRoom && !Room3DView.isAvailable },
+                                    set: { showRoom = $0 })) {
             RoomEditView().environmentObject(game)
+        }
+        .fullScreenCover(isPresented: Binding(get: { showRoom && Room3DView.isAvailable },
+                                              set: { showRoom = $0 })) {
+            Room3DFullView().environmentObject(game)
         }
         .alert("最初からやり直す？", isPresented: $confirmReset) {
             Button("やり直す", role: .destructive) { game.resetAll() }

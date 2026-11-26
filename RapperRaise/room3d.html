@@ -1,0 +1,2056 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>PS5風 3Dマイルーム・プロトタイプ (NYC Loft Engine)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="three.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=Noto+Sans+JP:wght@400;500;700;900&display=swap" rel="stylesheet">
+    <style>
+        * {
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+            font-family: 'Inter', 'Noto Sans JP', sans-serif;
+        }
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: #090d16;
+            color: #f8fafc;
+            touch-action: none;
+        }
+        /* PS5風のすりガラスHUDスタイル */
+        .ps5-glass {
+            background: rgba(15, 23, 42, 0.62);
+            backdrop-filter: blur(18px) saturate(160%);
+            -webkit-backdrop-filter: blur(18px) saturate(160%);
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+        }
+        .ps5-btn {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            color: #f1f5f9;
+            transition: all 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        .ps5-btn:hover {
+            background: rgba(255, 255, 255, 0.18);
+            border-color: rgba(255, 255, 255, 0.35);
+            transform: translateY(-1px);
+        }
+        .ps5-btn:active {
+            transform: translateY(1px) scale(0.98);
+        }
+        .ps5-btn-active {
+            background: linear-gradient(135deg, rgba(251, 191, 36, 0.92), rgba(245, 158, 11, 0.92));
+            border-color: #fef3c7;
+            color: #0f172a;
+            font-weight: 800;
+            box-shadow: 0 0 18px rgba(245, 158, 11, 0.45);
+        }
+        .ps5-btn-cyan {
+            background: linear-gradient(135deg, rgba(56, 189, 248, 0.9), rgba(2, 132, 199, 0.9));
+            border-color: #bae6fd;
+            color: #082f49;
+            font-weight: 800;
+            box-shadow: 0 0 18px rgba(56, 189, 248, 0.4);
+        }
+        /* ピグDNAを受け継ぐ3D空間追従吹き出し */
+        .speech-bubble-3d {
+            position: absolute;
+            background: rgba(255, 255, 255, 0.94);
+            backdrop-filter: blur(8px);
+            border: 1.5px solid rgba(255, 255, 255, 0.9);
+            border-radius: 16px;
+            padding: 8px 14px;
+            color: #0f172a;
+            font-weight: 700;
+            font-size: 13px;
+            line-height: 1.4;
+            max-width: 240px;
+            word-wrap: break-word;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.45);
+            transform: translate(-50%, -100%);
+            pointer-events: none;
+            animation: bubblePop 0.22s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            z-index: 30;
+        }
+        .speech-bubble-3d::after {
+            content: '';
+            position: absolute;
+            bottom: -7px;
+            left: 50%;
+            transform: translateX(-50%);
+            border-width: 7px 6px 0;
+            border-style: solid;
+            border-color: rgba(255, 255, 255, 0.94) transparent transparent;
+        }
+        @keyframes bubblePop {
+            0% { opacity: 0; transform: translate(-50%, -85%) scale(0.75); }
+            100% { opacity: 1; transform: translate(-50%, -100%) scale(1); }
+        }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+</head>
+<body class="w-screen h-screen relative overflow-hidden">
+
+    <!-- WebGL 3D レンダリングキャンバス -->
+    <div id="canvasContainer" class="absolute inset-0 w-full h-full cursor-grab active:cursor-grabbing"></div>
+
+    <!-- 吹き出し・3D空間ラベルオーバーレイ -->
+    <div id="overlayLayer" class="absolute inset-0 pointer-events-none overflow-hidden"></div>
+
+    <!-- 上部 PS5スタイル・フローティングヘッダー -->
+    <header class="relative z-20 flex flex-wrap items-center justify-between gap-2 p-3 sm:p-4 pointer-events-none">
+        <!-- ルームタイトル＆ライティングステータス -->
+        <div class="pointer-events-auto ps5-glass rounded-2xl px-4 py-2 flex items-center gap-3">
+            <div class="w-2.5 h-2.5 rounded-full bg-amber-400 shadow-[0_0_10px_#fbbf24] animate-pulse"></div>
+            <div>
+                <div class="text-[10px] tracking-widest uppercase font-bold text-amber-300/90">NYC LOFT • PBR 3D ENGINE</div>
+                <div class="text-sm sm:text-base font-extrabold tracking-tight text-white">ブルックリン・ロフトのへや</div>
+            </div>
+        </div>
+
+        <!-- 右上コントロール群 -->
+        <div class="pointer-events-auto flex flex-wrap items-center gap-1.5 sm:gap-2">
+            <!-- 環境ライティング切替 (PS5 Golden Hour / Rainy Night / Morning) -->
+            <div class="ps5-glass rounded-full p-1 flex items-center gap-1">
+                <button data-light="sunset" class="light-btn ps5-btn ps5-btn-active rounded-full px-3 py-1.5 text-xs font-bold">🌇 夕暮れ</button>
+                <button data-light="rain" class="light-btn ps5-btn rounded-full px-3 py-1.5 text-xs font-bold">🌧️ 雨の夜</button>
+                <button data-light="morning" class="light-btn ps5-btn rounded-full px-3 py-1.5 text-xs font-bold">☀️ 朝陽</button>
+            </div>
+
+            <!-- カメラアングル切替 -->
+            <div class="ps5-glass rounded-full p-1 hidden md:flex items-center gap-1">
+                <button data-cam="iso" class="cam-btn ps5-btn ps5-btn-cyan rounded-full px-3 py-1.5 text-xs font-bold">クォーター</button>
+                <button data-cam="window" class="cam-btn ps5-btn rounded-full px-3 py-1.5 text-xs font-bold">窓辺夕景</button>
+                <button data-cam="cinema" class="cam-btn ps5-btn rounded-full px-3 py-1.5 text-xs font-bold">シネマ</button>
+            </div>
+
+            <!-- Lo-Fi BGM サウンドトグル -->
+            <button id="btnAudio" class="ps5-glass ps5-btn rounded-full px-3.5 py-2 text-xs font-bold flex items-center gap-1.5" title="環境Lo-Fiシンセ再生">
+                <span id="audioIcon">🔇</span>
+                <span class="hidden sm:inline">Lo-Fi音</span>
+            </button>
+
+            <!-- Devデバッグ -->
+            <button id="btnDebug" class="ps5-glass ps5-btn rounded-full px-3.5 py-2 text-xs font-bold flex items-center gap-1.5">
+                <span class="text-sky-400">&lt;/&gt;</span>
+                <span>Dev</span>
+            </button>
+
+            <!-- もようがえ -->
+            <button id="btnEditMode" class="ps5-glass ps5-btn-active rounded-full px-4 py-2 text-xs font-extrabold flex items-center gap-1.5">
+                <span>🛋️</span>
+                <span id="editModeText">もようがえ</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- 開発者向け 3Dエンジン・インスペクター -->
+    <aside id="debugPanel" class="hidden relative z-20 mx-3 sm:mx-4 self-start ps5-glass rounded-2xl p-3.5 text-xs max-w-xs pointer-events-auto border-sky-400/40">
+        <div class="font-extrabold text-sky-300 border-b border-white/15 pb-1.5 mb-2 flex items-center justify-between">
+            <span>🎮 PS5-Style 3D Engine Specs</span>
+            <span class="text-[10px] bg-sky-500/30 border border-sky-400/50 px-1.5 py-0.5 rounded text-sky-200">ACES Filmic</span>
+        </div>
+        <div class="space-y-1 font-mono text-[11px] text-slate-200">
+            <div>Hover Tile  : <span id="dbgHover" class="text-amber-300">(-, -)</span></div>
+            <div>Avatar Grid : <span id="dbgAvatar" class="text-emerald-300">(5, 5)</span></div>
+            <div>Draw Calls  : <span id="dbgCalls" class="text-sky-300">0</span> / Tris: <span id="dbgTris" class="text-sky-300">0</span></div>
+            <div>Shadow Map  : <span class="text-purple-300">2048×2048 PCFSoft</span></div>
+            <div class="text-[10px] text-slate-400 pt-1.5 leading-relaxed border-t border-white/10 mt-1.5">
+                • プロシージャルPBR (Albedo/Bump/Roughness)<br>
+                • ボリューメトリック・ゴッドレイ (Additive Shader)<br>
+                • 右ドラッグ回転 / ホイールズーム / 家具クリック連動
+            </div>
+        </div>
+    </aside>
+
+    <!-- 模様替えフローティング操作バー -->
+    <div id="editControls" class="hidden relative z-20 mx-auto mb-2 pointer-events-auto ps5-glass rounded-full px-4 py-2 flex items-center gap-2">
+        <span id="selectedFurnitureLabel" class="text-xs font-extrabold text-amber-300 px-2">家具を選択して床をクリック</span>
+        <button id="btnRotateItem" class="ps5-btn rounded-full px-3 py-1 text-xs font-bold">↻ 回転 (R)</button>
+        <button id="btnDeleteMode" class="ps5-btn rounded-full px-3 py-1 text-xs font-bold text-rose-300">🗑️ 撤去</button>
+        <button id="btnResetRoom" class="ps5-btn rounded-full px-3 py-1 text-xs font-bold text-slate-300">初期配置</button>
+    </div>
+
+    <!-- 下部 HUD コントロールバー -->
+    <footer class="fixed bottom-0 inset-x-0 z-20 p-2.5 sm:p-4 pointer-events-none flex flex-col items-center gap-2">
+
+        <!-- アクション＆エモートポップアップ -->
+        <div id="actionMenu" class="hidden pointer-events-auto ps5-glass rounded-2xl p-2.5 flex flex-wrap items-center justify-center gap-1.5 max-w-md">
+            <button data-action="sit" class="action-trigger ps5-btn rounded-xl px-3 py-1.5 text-xs font-bold">🪑 座る</button>
+            <button data-action="wave" class="action-trigger ps5-btn rounded-xl px-3 py-1.5 text-xs font-bold">👋 挨拶</button>
+            <button data-action="jump" class="action-trigger ps5-btn rounded-xl px-3 py-1.5 text-xs font-bold">⚡ ジャンプ</button>
+            <div class="w-px h-5 bg-white/20 mx-1"></div>
+            <button data-emote="♪" class="emote-trigger ps5-btn rounded-xl px-2.5 py-1.5 text-sm font-bold text-amber-300">♪</button>
+            <button data-emote="！" class="emote-trigger ps5-btn rounded-xl px-2.5 py-1.5 text-sm font-bold text-sky-300">！</button>
+            <button data-emote="♥" class="emote-trigger ps5-btn rounded-xl px-2.5 py-1.5 text-sm font-bold text-rose-400">♥</button>
+            <button data-emote="🔥" class="emote-trigger ps5-btn rounded-xl px-2.5 py-1.5 text-sm font-bold">🔥</button>
+        </div>
+
+        <!-- 通常プレイ時：チャット＆アクションバー -->
+        <div id="normalBottomBar" class="pointer-events-auto w-full max-w-2xl ps5-glass rounded-full p-1.5 sm:p-2 flex items-center gap-2">
+            <button id="btnToggleActions" class="ps5-btn rounded-full px-3.5 py-2 text-xs sm:text-sm font-bold shrink-0 flex items-center gap-1.5">
+                <span>🕺</span>
+                <span class="hidden sm:inline">アクション</span>
+            </button>
+
+            <form id="chatForm" class="flex-1 flex items-center gap-1.5 min-w-0">
+                <input
+                    id="chatInput"
+                    type="text"
+                    maxlength="45"
+                    placeholder="メッセージを入力... (ソファやレコード機もクリックできます)"
+                    class="w-full bg-white/10 border border-white/15 focus:border-amber-400 focus:bg-white/15 rounded-full px-4 py-1.5 text-xs sm:text-sm text-white placeholder-slate-400 outline-none transition"
+                />
+                <button type="submit" class="ps5-btn-active rounded-full px-4 sm:px-5 py-2 text-xs sm:text-sm shrink-0">
+                    発言
+                </button>
+            </form>
+        </div>
+
+        <!-- 模様替えモード時：家具インベントリ -->
+        <div id="furnitureInventoryBar" class="hidden pointer-events-auto w-full max-w-3xl ps5-glass rounded-2xl p-2.5">
+            <div id="inventoryList" class="flex items-center gap-2 overflow-x-auto no-scrollbar"></div>
+        </div>
+    </footer>
+
+<script>
+/**
+ * ============================================================================
+ * PS5-Style 3D Loft Room Engine (Marvel's Spider-Man / Miles Morales Aesthetic)
+ * ============================================================================
+ * 技術アーキテクチャ:
+ * 1. Three.js PBR Pipeline:
+ *    - ACESFilmicToneMapping + sRGBEncoding による映画的ダイナミックレンジ
+ *    - 2048x2048 PCFSoftShadowMap による窓枠のリアルな落ち影
+ *    - HTML5 Canvas プロシージャル生成テクスチャ (Albedo + Bump + Roughness)
+ *      ・ヘリンボーン＆木目フローリング（目地と木目のスペキュラ反射差）
+ *      ・ブルックリン風赤レンガ壁（モルタル目地バンプマップ）
+ *      ・ファブリック織り目（ソファ・ラグ）
+ * 2. ボリューメトリック・ライティング & 環境プリセット:
+ *    - 大きなインダストリアル窓から差し込む半透明ライトシャフト（ゴッドレイ）
+ *    - 夕暮れ (Golden Hour) / 雨のNYC夜 (Rainy Night + 窓の雨粒アニメーション) / 朝陽 (Morning)
+ * 3. ピグ風インタラクション:
+ *    - 10x10 グリッド上の A* 経路探索移動
+ *    - ソファクリックで自動移動＆着席、レコードプレイヤー/TVクリックで音楽・映像反応
+ */
+
+const container = document.getElementById('canvasContainer');
+const overlayLayer = document.getElementById('overlayLayer');
+
+// --- グリッド・ワールド定数 ---
+const GRID_SIZE = 10;
+const TILE_SIZE = 1.0; // 1タイル = 1.0m スケール
+const ROOM_SIZE = GRID_SIZE * TILE_SIZE;
+const HALF_ROOM = ROOM_SIZE / 2;
+const WALL_HEIGHT = 4.4;
+
+// --- ゲーム状態 ---
+const state = {
+    editMode: false,
+    debugMode: false,
+    deleteMode: false,
+    selectedCatalogId: 'sofa_ivory',
+    placementRotation: 0,
+    hoverTile: null,
+    lightingPreset: 'sunset', // 'sunset' | 'rain' | 'morning'
+    cameraPreset: 'iso',      // 'iso' | 'window' | 'cinema'
+    musicPlaying: false,
+    furnitures: [],
+    chatBubble: null,
+    emotePop: null
+};
+
+// --- 家具カタログ定義 ---
+const FURNITURE_CATALOG = [
+    { id: 'rug_woven', name: '織り目エリアラグ', category: 'floor_decor', w: 4, d: 3, solid: false, sittable: false, color: '#cbd5e1' },
+    { id: 'sofa_ivory', name: 'ロフトソファ', category: 'furniture', w: 3, d: 1, solid: false, sittable: true, seatY: 0.44, color: '#f8fafc' },
+    { id: 'table_oak', name: 'オークローテーブル', category: 'furniture', w: 2, d: 1, solid: true, sittable: false, color: '#b45309' },
+    { id: 'media_tv', name: 'TV＆オーディオ台', category: 'furniture', w: 3, d: 1, solid: true, sittable: false, interactive: 'tv', color: '#1e293b' },
+    { id: 'turntable_desk', name: 'DJレコードデスク', category: 'furniture', w: 2, d: 1, solid: true, sittable: false, interactive: 'music', color: '#78350f' },
+    { id: 'plant_monstera', name: 'モンステラ鉢植え', category: 'furniture', w: 1, d: 1, solid: true, sittable: false, color: '#15803d' },
+    { id: 'lamp_arc', name: 'フロアランプ', category: 'furniture', w: 1, d: 1, solid: true, sittable: false, interactive: 'light', color: '#fbbf24' },
+    { id: 'cushion_knit', name: 'ニットプフ', category: 'furniture', w: 1, d: 1, solid: false, sittable: true, seatY: 0.28, color: '#38bdf8' }
+];
+
+// ============================================================================
+// Three.js シーン・レンダラー・カメラ初期化
+// ============================================================================
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b101d);
+scene.fog = new THREE.FogExp2(0x131b2e, 0.022);
+
+const camera = new THREE.PerspectiveCamera(36, window.innerWidth / window.innerHeight, 0.1, 100);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.18;
+renderer.outputEncoding = THREE.sRGBEncoding;
+container.appendChild(renderer.domElement);
+
+// --- カメラ軌道（Orbit）制御ステート ---
+const camControl = {
+    yaw: Math.PI * 0.25,       // 水平角度
+    pitch: 0.56,              // 俯瞰角度
+    distance: 14.5,           // ターゲットからの距離
+    target: new THREE.Vector3(0, 0.9, 0),
+    desiredYaw: Math.PI * 0.25,
+    desiredPitch: 0.56,
+    desiredDistance: 14.5,
+    desiredTarget: new THREE.Vector3(0, 0.9, 0)
+};
+
+function setCameraPreset(preset) {
+    state.cameraPreset = preset;
+    if (preset === 'iso') {
+        camControl.desiredYaw = Math.PI * 0.25;
+        camControl.desiredPitch = 0.56;
+        camControl.desiredDistance = 14.5;
+        camControl.desiredTarget.set(0, 0.9, 0);
+    } else if (preset === 'window') {
+        camControl.desiredYaw = Math.PI * 0.36;
+        camControl.desiredPitch = 0.32;
+        camControl.desiredDistance = 10.2;
+        camControl.desiredTarget.set(-0.6, 1.3, -1.2);
+    } else if (preset === 'cinema') {
+        camControl.desiredYaw = Math.PI * 0.18;
+        camControl.desiredPitch = 0.42;
+        camControl.desiredDistance = 11.5;
+        camControl.desiredTarget.set(0.2, 1.0, 0.2);
+    }
+}
+
+// ============================================================================
+// プロシージャル PBR テクスチャジェネレーター (高精細木材・赤レンガ・ファブリック)
+// ============================================================================
+function createWoodFloorTextures() {
+    const size = 1024;
+    const albedoCanvas = document.createElement('canvas');
+    const bumpCanvas = document.createElement('canvas');
+    const roughCanvas = document.createElement('canvas');
+    albedoCanvas.width = bumpCanvas.width = roughCanvas.width = size;
+    albedoCanvas.height = bumpCanvas.height = roughCanvas.height = size;
+
+    const aCtx = albedoCanvas.getContext('2d');
+    const bCtx = bumpCanvas.getContext('2d');
+    const rCtx = roughCanvas.getContext('2d');
+
+    // ベース背景
+    aCtx.fillStyle = '#6b4226';
+    aCtx.fillRect(0, 0, size, size);
+    bCtx.fillStyle = '#808080';
+    bCtx.fillRect(0, 0, size, size);
+    rCtx.fillStyle = '#666666'; // 適度なワックス光沢
+    rCtx.fillRect(0, 0, size, size);
+
+    const rows = 16;
+    const cols = 4;
+    const plankH = size / rows;
+    const plankW = size / cols;
+
+    for (let r = 0; r < rows; r++) {
+        const offsetX = (r % 2) * (plankW * 0.5);
+        for (let c = -1; c <= cols; c++) {
+            const x = c * plankW + offsetX;
+            const y = r * plankH;
+
+            // 板ごとの微妙な色調差
+            const tone = (Math.sin(r * 12.9898 + c * 78.233) * 43758.5453) % 1;
+            const shade = Math.floor((tone - 0.5) * 24);
+            const red = Math.min(255, Math.max(40, 118 + shade));
+            const green = Math.min(255, Math.max(25, 72 + Math.floor(shade * 0.7)));
+            const blue = Math.min(255, Math.max(15, 42 + Math.floor(shade * 0.5)));
+
+            aCtx.fillStyle = `rgb(${red},${green},${blue})`;
+            aCtx.fillRect(x + 1, y + 1, plankW - 2, plankH - 2);
+
+            // 木目繊維ライン
+            for (let g = 0; g < 18; g++) {
+                const gy = y + 2 + Math.random() * (plankH - 4);
+                aCtx.strokeStyle = `rgba(35, 18, 8, ${0.06 + Math.random() * 0.08})`;
+                aCtx.lineWidth = 1 + Math.random() * 1.5;
+                aCtx.beginPath();
+                aCtx.moveTo(x + 2, gy);
+                aCtx.bezierCurveTo(
+                    x + plankW * 0.33, gy + (Math.random() - 0.5) * 4,
+                    x + plankW * 0.66, gy + (Math.random() - 0.5) * 4,
+                    x + plankW - 2, gy
+                );
+                aCtx.stroke();
+
+                bCtx.strokeStyle = 'rgba(60,60,60,0.25)';
+                bCtx.stroke();
+            }
+
+            // 板の継ぎ目（深い溝）
+            aCtx.strokeStyle = '#2d180c';
+            aCtx.lineWidth = 2;
+            aCtx.strokeRect(x, y, plankW, plankH);
+
+            bCtx.strokeStyle = '#181818';
+            bCtx.lineWidth = 3;
+            bCtx.strokeRect(x, y, plankW, plankH);
+
+            // 板ごとのラフネス差（リアルな反射ムラ）
+            const roughVal = 75 + Math.floor(Math.abs(tone) * 55);
+            rCtx.fillStyle = `rgb(${roughVal},${roughVal},${roughVal})`;
+            rCtx.fillRect(x + 2, y + 2, plankW - 4, plankH - 4);
+        }
+    }
+
+    const map = new THREE.CanvasTexture(albedoCanvas);
+    const bumpMap = new THREE.CanvasTexture(bumpCanvas);
+    const roughnessMap = new THREE.CanvasTexture(roughCanvas);
+    [map, bumpMap, roughnessMap].forEach(t => {
+        t.wrapS = t.wrapT = THREE.RepeatWrapping;
+        t.repeat.set(3, 3);
+    });
+    map.encoding = THREE.sRGBEncoding;
+
+    return { map, bumpMap, roughnessMap };
+}
+
+function createBrickWallTextures() {
+    const size = 1024;
+    const aCanvas = document.createElement('canvas');
+    const bCanvas = document.createElement('canvas');
+    aCanvas.width = bCanvas.width = size;
+    aCanvas.height = bCanvas.height = size;
+
+    const aCtx = aCanvas.getContext('2d');
+    const bCtx = bCanvas.getContext('2d');
+
+    // モルタル目地ベース
+    aCtx.fillStyle = '#9ca3af';
+    aCtx.fillRect(0, 0, size, size);
+    bCtx.fillStyle = '#222222';
+    bCtx.fillRect(0, 0, size, size);
+
+    const rows = 16;
+    const cols = 8;
+    const bh = size / rows;
+    const bw = size / cols;
+    const mortar = 5;
+
+    const brickColors = ['#8c3b2b', '#9e4733', '#783124', '#a8523c', '#6e2c20'];
+
+    for (let r = 0; r < rows; r++) {
+        const shift = (r % 2) * (bw * 0.5);
+        for (let c = -1; c <= cols; c++) {
+            const x = c * bw + shift + mortar * 0.5;
+            const y = r * bh + mortar * 0.5;
+            const w = bw - mortar;
+            const h = bh - mortar;
+
+            const col = brickColors[Math.abs((r * 7 + c * 13)) % brickColors.length];
+            aCtx.fillStyle = col;
+            aCtx.fillRect(x, y, w, h);
+
+            // レンガ表面の凹凸ノイズ
+            for (let n = 0; n < 35; n++) {
+                aCtx.fillStyle = Math.random() > 0.5 ? 'rgba(255,220,200,0.07)' : 'rgba(20,10,5,0.12)';
+                aCtx.fillRect(x + Math.random() * w, y + Math.random() * h, 4, 3);
+            }
+
+            bCtx.fillStyle = '#d4d4d4';
+            bCtx.fillRect(x + 1, y + 1, w - 2, h - 2);
+        }
+    }
+
+    const map = new THREE.CanvasTexture(aCanvas);
+    const bumpMap = new THREE.CanvasTexture(bCanvas);
+    [map, bumpMap].forEach(t => {
+        t.wrapS = t.wrapT = THREE.RepeatWrapping;
+        t.repeat.set(2.5, 1.4);
+    });
+    map.encoding = THREE.sRGBEncoding;
+    return { map, bumpMap };
+}
+
+function createFabricBumpTexture() {
+    const size = 256;
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#808080';
+    ctx.fillRect(0, 0, size, size);
+
+    for (let y = 0; y < size; y += 4) {
+        for (let x = 0; x < size; x += 4) {
+            ctx.fillStyle = ((x + y) / 4) % 2 === 0 ? '#a8a8a8' : '#585858';
+            ctx.fillRect(x, y, 3, 3);
+        }
+    }
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(8, 8);
+    return tex;
+}
+
+const woodTex = createWoodFloorTextures();
+const brickTex = createBrickWallTextures();
+const fabricBump = createFabricBumpTexture();
+
+// ============================================================================
+// 建築シェル・NYCスカイライン・ボリューメトリックサンビーム構築
+// ============================================================================
+const roomGroup = new THREE.Group();
+scene.add(roomGroup);
+
+// 1. ハードウッド・フローリング床
+const floorGeo = new THREE.BoxGeometry(ROOM_SIZE + 0.4, 0.3, ROOM_SIZE + 0.4);
+const floorMat = new THREE.MeshStandardMaterial({
+    map: woodTex.map,
+    bumpMap: woodTex.bumpMap,
+    bumpScale: 0.018,
+    roughnessMap: woodTex.roughnessMap,
+    roughness: 0.42,
+    metalness: 0.06
+});
+const floorMesh = new THREE.Mesh(floorGeo, floorMat);
+floorMesh.position.set(0, -0.15, 0);
+floorMesh.receiveShadow = true;
+floorMesh.name = 'floor';
+roomGroup.add(floorMesh);
+
+// 2. 右奥の壁（ブルックリン赤レンガ壁: z = -HALF_ROOM）
+const brickMat = new THREE.MeshStandardMaterial({
+    map: brickTex.map,
+    bumpMap: brickTex.bumpMap,
+    bumpScale: 0.04,
+    roughness: 0.85,
+    metalness: 0.02
+});
+const backRightWall = new THREE.Mesh(new THREE.BoxGeometry(ROOM_SIZE + 0.4, WALL_HEIGHT, 0.32), brickMat);
+backRightWall.position.set(0, WALL_HEIGHT / 2, -HALF_ROOM - 0.16);
+backRightWall.receiveShadow = true;
+backRightWall.castShadow = true;
+roomGroup.add(backRightWall);
+
+// 3. 左奥の壁（インダストリアル大型窓付きウォール: x = -HALF_ROOM）
+// 窓枠から太陽光が差し込むよう、壁を上下左右のパーツに分割して実際の開口部を作る
+const plasterMat = new THREE.MeshStandardMaterial({
+    color: 0xe2e8f0,
+    roughness: 0.78,
+    metalness: 0.04
+});
+const ironMat = new THREE.MeshStandardMaterial({
+    color: 0x18181b,
+    roughness: 0.35,
+    metalness: 0.82
+});
+
+function buildIndustrialWindowWall() {
+    const wallGroup = new THREE.Group();
+    const wx = -HALF_ROOM - 0.16;
+
+    // 腰壁（下部）
+    const bottomWall = new THREE.Mesh(new THREE.BoxGeometry(0.32, 1.0, ROOM_SIZE + 0.4), brickMat);
+    bottomWall.position.set(wx, 0.5, 0);
+    bottomWall.castShadow = true;
+    bottomWall.receiveShadow = true;
+    wallGroup.add(bottomWall);
+
+    // 垂れ壁（上部）
+    const topWall = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.7, ROOM_SIZE + 0.4), plasterMat);
+    topWall.position.set(wx, WALL_HEIGHT - 0.35, 0);
+    topWall.castShadow = true;
+    wallGroup.add(topWall);
+
+    // 左右の柱壁
+    const pillarFront = new THREE.Mesh(new THREE.BoxGeometry(0.32, WALL_HEIGHT, 1.3), plasterMat);
+    pillarFront.position.set(wx, WALL_HEIGHT / 2, HALF_ROOM - 0.55);
+    pillarFront.castShadow = true;
+    wallGroup.add(pillarFront);
+
+    const pillarBack = new THREE.Mesh(new THREE.BoxGeometry(0.32, WALL_HEIGHT, 1.3), plasterMat);
+    pillarBack.position.set(wx, WALL_HEIGHT / 2, -HALF_ROOM + 0.55);
+    pillarBack.castShadow = true;
+    wallGroup.add(pillarBack);
+
+    // 黒いアイアン製サッシ格子（これが床に美しい格子状の影を落とす！）
+    const winBottom = 1.0;
+    const winTop = WALL_HEIGHT - 0.7;
+    const winH = winTop - winBottom;
+    const winStartZ = -HALF_ROOM + 1.2;
+    const winEndZ = HALF_ROOM - 1.2;
+    const winW = winEndZ - winStartZ;
+
+    // 縦桟（4本）
+    for (let i = 0; i <= 4; i++) {
+        const z = winStartZ + (winW / 4) * i;
+        const bar = new THREE.Mesh(new THREE.BoxGeometry(0.14, winH, 0.08), ironMat);
+        bar.position.set(wx, winBottom + winH / 2, z);
+        bar.castShadow = true;
+        wallGroup.add(bar);
+    }
+    // 横桟（3本）
+    for (let j = 0; j <= 3; j++) {
+        const y = winBottom + (winH / 3) * j;
+        const bar = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.08, winW), ironMat);
+        bar.position.set(wx, y, 0);
+        bar.castShadow = true;
+        wallGroup.add(bar);
+    }
+
+    // 窓ガラス（反射＆雨粒用マテリアル）
+    const glassMat = new THREE.MeshPhysicalMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0.16,
+        roughness: 0.08,
+        metalness: 0.1
+    });
+    const glassPane = new THREE.Mesh(new THREE.PlaneGeometry(winW, winH), glassMat);
+    glassPane.rotation.y = Math.PI / 2;
+    glassPane.position.set(wx + 0.02, winBottom + winH / 2, 0);
+    wallGroup.add(glassPane);
+
+    roomGroup.add(wallGroup);
+}
+buildIndustrialWindowWall();
+
+// 4. 窓の外の NYC マンハッタン・スカイライン遠景
+const skylineGroup = new THREE.Group();
+scene.add(skylineGroup);
+
+function buildNYCSkyline() {
+    // グラデーション空ドーム背景板
+    const skyCanvas = document.createElement('canvas');
+    skyCanvas.width = 64;
+    skyCanvas.height = 512;
+    const sCtx = skyCanvas.getContext('2d');
+    const grad = sCtx.createLinearGradient(0, 0, 0, 512);
+    grad.addColorStop(0.0, '#1e1b4b');
+    grad.addColorStop(0.42, '#7c2d12');
+    grad.addColorStop(0.65, '#f97316');
+    grad.addColorStop(0.85, '#fde047');
+    grad.addColorStop(1.0, '#fef08a');
+    sCtx.fillStyle = grad;
+    sCtx.fillRect(0, 0, 64, 512);
+
+    const skyTex = new THREE.CanvasTexture(skyCanvas);
+    skyTex.encoding = THREE.sRGBEncoding;
+
+    const backdropMat = new THREE.MeshBasicMaterial({ map: skyTex, fog: false });
+    const backdrop = new THREE.Mesh(new THREE.PlaneGeometry(46, 26), backdropMat);
+    backdrop.rotation.y = Math.PI / 2;
+    backdrop.position.set(-22, 5, 0);
+    backdrop.name = 'skyBackdrop';
+    skylineGroup.add(backdrop);
+
+    // 遠景ビル群と発光ウィンドウ
+    const bldgMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.7 });
+    const winGlowMat = new THREE.MeshBasicMaterial({ color: 0xfef08a });
+
+    const buildings = [
+        { z: -11, w: 3.5, h: 12, d: 3.2 },
+        { z: -7.2, w: 4.0, h: 16, d: 3.5 },
+        { z: -3.2, w: 3.2, h: 10.5, d: 3.0 },
+        { z: 0.5, w: 4.2, h: 18.5, d: 3.8 }, // エンパイア風タワー
+        { z: 4.8, w: 3.6, h: 13.0, d: 3.2 },
+        { z: 8.8, w: 4.0, h: 15.0, d: 3.5 },
+        { z: 12.5, w: 3.5, h: 11.0, d: 3.0 }
+    ];
+
+    buildings.forEach((b, idx) => {
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(b.d, b.h, b.w), bldgMat);
+        mesh.position.set(-16 - (idx % 2) * 2.2, b.h / 2 - 4, b.z);
+        skylineGroup.add(mesh);
+
+        // ビルの窓明かり
+        for (let wy = 1; wy < b.h - 1.5; wy += 1.1) {
+            for (let wz = -b.w * 0.35; wz <= b.w * 0.35; wz += 0.75) {
+                if ((idx * 13 + Math.floor(wy * 3) + Math.floor(wz * 5)) % 3 === 0) {
+                    const wDot = new THREE.Mesh(new THREE.PlaneGeometry(0.32, 0.45), winGlowMat);
+                    wDot.rotation.y = Math.PI / 2;
+                    wDot.position.set(mesh.position.x + b.d / 2 + 0.02, wy - 4, b.z + wz);
+                    skylineGroup.add(wDot);
+                }
+            }
+        }
+    });
+}
+buildNYCSkyline();
+
+// 5. ボリューメトリック・サンビーム（窓から差し込む光の柱 / God Rays）
+const sunBeamGroup = new THREE.Group();
+scene.add(sunBeamGroup);
+
+const beamCanvas = document.createElement('canvas');
+beamCanvas.width = 128;
+beamCanvas.height = 256;
+const bmCtx = beamCanvas.getContext('2d');
+const bmGrad = bmCtx.createLinearGradient(0, 0, 0, 256);
+bmGrad.addColorStop(0.0, 'rgba(255, 225, 150, 0.24)');
+bmGrad.addColorStop(0.55, 'rgba(255, 190, 100, 0.09)');
+bmGrad.addColorStop(1.0, 'rgba(255, 180, 90, 0.0)');
+bmCtx.fillStyle = bmGrad;
+bmCtx.fillRect(0, 0, 128, 256);
+const beamTex = new THREE.CanvasTexture(beamCanvas);
+
+const beamMat = new THREE.MeshBasicMaterial({
+    map: beamTex,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide
+});
+
+[-2.2, 0, 2.2].forEach(zPos => {
+    const beam = new THREE.Mesh(new THREE.PlaneGeometry(2.1, 8.5), beamMat);
+    beam.position.set(-1.6, 2.1, zPos);
+    beam.rotation.y = Math.PI / 2;
+    beam.rotation.x = -0.58; // 太陽光の入射角に合わせる
+    sunBeamGroup.add(beam);
+});
+
+// 空気中のホコリ粒子（Golden Dust Motes）
+const dustCount = 120;
+const dustGeo = new THREE.BufferGeometry();
+const dustPositions = new Float32Array(dustCount * 3);
+for (let i = 0; i < dustCount; i++) {
+    dustPositions[i * 3] = (Math.random() - 0.5) * ROOM_SIZE;
+    dustPositions[i * 3 + 1] = 0.3 + Math.random() * 3.5;
+    dustPositions[i * 3 + 2] = (Math.random() - 0.5) * ROOM_SIZE;
+}
+dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPositions, 3));
+const dustMat = new THREE.PointsMaterial({
+    color: 0xfef08a,
+    size: 0.045,
+    transparent: true,
+    opacity: 0.65,
+    blending: THREE.AdditiveBlending
+});
+const dustParticles = new THREE.Points(dustGeo, dustMat);
+scene.add(dustParticles);
+
+// 雨の夜用パーティクル（窓の外に降る雨）
+const rainCount = 350;
+const rainGeo = new THREE.BufferGeometry();
+const rainPositions = new Float32Array(rainCount * 3);
+for (let i = 0; i < rainCount; i++) {
+    rainPositions[i * 3] = -6.2 - Math.random() * 6;
+    rainPositions[i * 3 + 1] = Math.random() * 10;
+    rainPositions[i * 3 + 2] = (Math.random() - 0.5) * 16;
+}
+rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPositions, 3));
+const rainMat = new THREE.PointsMaterial({
+    color: 0x93c5fd,
+    size: 0.07,
+    transparent: true,
+    opacity: 0.0
+});
+const rainParticles = new THREE.Points(rainGeo, rainMat);
+scene.add(rainParticles);
+
+// ============================================================================
+// ライティングシステム (PS5 Golden Hour / Rainy Night / Morning)
+// ============================================================================
+const hemiLight = new THREE.HemisphereLight(0x93c5fd, 0x451a03, 0.65);
+scene.add(hemiLight);
+
+// メイン太陽光（窓の外から斜めに差し込み、窓格子の影を床に投影）
+const sunLight = new THREE.DirectionalLight(0xffb454, 2.8);
+sunLight.position.set(-11, 7.2, 1.8);
+sunLight.castShadow = true;
+sunLight.shadow.mapSize.width = 2048;
+sunLight.shadow.mapSize.height = 2048;
+sunLight.shadow.camera.near = 2;
+sunLight.shadow.camera.far = 26;
+const dShadow = 7.5;
+sunLight.shadow.camera.left = -dShadow;
+sunLight.shadow.camera.right = dShadow;
+sunLight.shadow.camera.top = dShadow;
+sunLight.shadow.camera.bottom = -dShadow;
+sunLight.shadow.bias = -0.0005;
+scene.add(sunLight);
+
+// 室内実用光源（フロアランプの暖色ポイントライト＆TVのクールブルー間接光）
+const lampPointLight = new THREE.PointLight(0xffaa44, 1.35, 9, 1.6);
+lampPointLight.position.set(-3.2, 2.2, 2.5);
+scene.add(lampPointLight);
+
+const tvGlowLight = new THREE.PointLight(0x38bdf8, 0.75, 6, 1.8);
+tvGlowLight.position.set(1.5, 1.2, -3.6);
+scene.add(tvGlowLight);
+
+function applyLightingPreset(preset) {
+    state.lightingPreset = preset;
+    if (preset === 'sunset') {
+        scene.background.setHex(0x0b101d);
+        scene.fog.color.setHex(0x16192b);
+        sunLight.color.setHex(0xffa947);
+        sunLight.intensity = 2.9;
+        hemiLight.color.setHex(0x7dd3fc);
+        hemiLight.groundColor.setHex(0x78350f);
+        hemiLight.intensity = 0.65;
+        lampPointLight.intensity = 1.4;
+        sunBeamGroup.visible = true;
+        dustMat.opacity = 0.68;
+        rainMat.opacity = 0.0;
+        renderer.toneMappingExposure = 1.18;
+    } else if (preset === 'rain') {
+        scene.background.setHex(0x050811);
+        scene.fog.color.setHex(0x070d19);
+        sunLight.color.setHex(0x38bdf8); // 月明かり＆ネオンの青白い外光
+        sunLight.intensity = 0.95;
+        hemiLight.color.setHex(0x1e3a8a);
+        hemiLight.groundColor.setHex(0x1e1b4b);
+        hemiLight.intensity = 0.55;
+        lampPointLight.intensity = 2.4; // 室内ランプの温かみが際立つコントラスト
+        sunBeamGroup.visible = false;
+        dustMat.opacity = 0.15;
+        rainMat.opacity = 0.65;
+        renderer.toneMappingExposure = 1.12;
+    } else if (preset === 'morning') {
+        scene.background.setHex(0x1e293b);
+        scene.fog.color.setHex(0x334155);
+        sunLight.color.setHex(0xfffbeb);
+        sunLight.intensity = 2.6;
+        hemiLight.color.setHex(0xe0f2fe);
+        hemiLight.groundColor.setHex(0x92400e);
+        hemiLight.intensity = 0.95;
+        lampPointLight.intensity = 0.4;
+        sunBeamGroup.visible = true;
+        dustMat.opacity = 0.4;
+        rainMat.opacity = 0.0;
+        renderer.toneMappingExposure = 1.24;
+    }
+}
+
+// ============================================================================
+// 高精細 3D 家具プロップビルダー (PBRマテリアル＋ベベル造形)
+// ============================================================================
+const furnitureGroup = new THREE.Group();
+scene.add(furnitureGroup);
+const furnitureMeshes = new Map(); // uid -> THREE.Group
+let tvScreenMesh = null;
+let vinylDiscMesh = null;
+let speakerCones = [];
+
+function gridToWorld(gx, gy, w = 1, d = 1) {
+    return {
+        x: -HALF_ROOM + (gx + w * 0.5) * TILE_SIZE,
+        z: -HALF_ROOM + (gy + d * 0.5) * TILE_SIZE
+    };
+}
+
+function worldToGrid(wx, wz) {
+    const gx = Math.floor((wx + HALF_ROOM) / TILE_SIZE);
+    const gy = Math.floor((wz + HALF_ROOM) / TILE_SIZE);
+    if (gx >= 0 && gx < GRID_SIZE && gy >= 0 && gy < GRID_SIZE) {
+        return { gx, gy };
+    }
+    return null;
+}
+
+function createFurniture3DModel(catalogId, w, d, rotation) {
+    const group = new THREE.Group();
+
+    const fabricMat = new THREE.MeshStandardMaterial({
+        color: 0xf1f5f9,
+        bumpMap: fabricBump,
+        bumpScale: 0.012,
+        roughness: 0.88,
+        metalness: 0.02
+    });
+    const oakWoodMat = new THREE.MeshStandardMaterial({
+        map: woodTex.map,
+        roughness: 0.45,
+        metalness: 0.08,
+        color: 0xd97706
+    });
+    const darkMetalMat = new THREE.MeshStandardMaterial({
+        color: 0x18181b,
+        roughness: 0.3,
+        metalness: 0.85
+    });
+
+    switch (catalogId) {
+        case 'rug_woven': {
+            const rugMat = new THREE.MeshStandardMaterial({
+                color: 0xcbd5e1,
+                bumpMap: fabricBump,
+                bumpScale: 0.02,
+                roughness: 0.95
+            });
+            const base = new THREE.Mesh(new THREE.BoxGeometry(w - 0.12, 0.025, d - 0.12), rugMat);
+            base.position.y = 0.0125;
+            base.receiveShadow = true;
+            group.add(base);
+
+            // 幾何学アクセントライン
+            const borderMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.9 });
+            const inner = new THREE.Mesh(new THREE.BoxGeometry(w - 0.45, 0.028, d - 0.45), borderMat);
+            inner.position.y = 0.014;
+            inner.receiveShadow = true;
+            group.add(inner);
+
+            const center = new THREE.Mesh(new THREE.BoxGeometry(w - 0.65, 0.03, d - 0.65), rugMat);
+            center.position.y = 0.015;
+            center.receiveShadow = true;
+            group.add(center);
+            break;
+        }
+        case 'sofa_ivory': {
+            // ソファ本体（rotation=0 時は横長 w=3, d=1）
+            const localW = w;
+            const localD = d;
+            // ベースフレーム
+            const base = new THREE.Mesh(new THREE.BoxGeometry(localW - 0.08, 0.24, localD - 0.08), fabricMat);
+            base.position.y = 0.2;
+            base.castShadow = true;
+            base.receiveShadow = true;
+            group.add(base);
+
+            // 金属脚
+            [[-localW / 2 + 0.15, -localD / 2 + 0.15], [localW / 2 - 0.15, -localD / 2 + 0.15],
+             [-localW / 2 + 0.15, localD / 2 - 0.15], [localW / 2 - 0.15, localD / 2 - 0.15]].forEach(([lx, lz]) => {
+                const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.025, 0.1, 12), darkMetalMat);
+                leg.position.set(lx, 0.05, lz);
+                group.add(leg);
+            });
+
+            // 背もたれ＆肘掛け（回転方向に応じて配置）
+            if (rotation % 2 === 0) {
+                const back = new THREE.Mesh(new THREE.BoxGeometry(localW - 0.08, 0.48, 0.22), fabricMat);
+                back.position.set(0, 0.52, -localD / 2 + 0.15);
+                back.castShadow = true;
+                group.add(back);
+
+                // クッション3分割
+                const cushCount = 3;
+                const cw = (localW - 0.34) / cushCount;
+                for (let i = 0; i < cushCount; i++) {
+                    const c = new THREE.Mesh(new THREE.BoxGeometry(cw - 0.03, 0.14, localD - 0.32), fabricMat);
+                    c.position.set(-localW / 2 + 0.17 + cw * (i + 0.5), 0.38, 0.08);
+                    c.castShadow = true;
+                    c.receiveShadow = true;
+                    group.add(c);
+                }
+                // アクセントピロー（スパイダーマン風クリムゾン＆ネイビー）
+                const pillowRed = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.36, 0.34, 0.14),
+                    new THREE.MeshStandardMaterial({ color: 0xdc2626, bumpMap: fabricBump, roughness: 0.85 })
+                );
+                pillowRed.position.set(-localW / 2 + 0.42, 0.55, -localD / 2 + 0.32);
+                pillowRed.rotation.set(-0.2, 0.25, 0.12);
+                pillowRed.castShadow = true;
+                group.add(pillowRed);
+            } else {
+                const back = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.48, localD - 0.08), fabricMat);
+                back.position.set(-localW / 2 + 0.15, 0.52, 0);
+                back.castShadow = true;
+                group.add(back);
+            }
+            break;
+        }
+        case 'table_oak': {
+            const top = new THREE.Mesh(new THREE.BoxGeometry(w - 0.12, 0.07, d - 0.12), oakWoodMat);
+            top.position.y = 0.42;
+            top.castShadow = true;
+            top.receiveShadow = true;
+            group.add(top);
+
+            // ヘアピンアイアン脚
+            [[-w / 2 + 0.18, -d / 2 + 0.18], [w / 2 - 0.18, -d / 2 + 0.18],
+             [-w / 2 + 0.18, d / 2 - 0.18], [w / 2 - 0.18, d / 2 - 0.18]].forEach(([lx, lz]) => {
+                const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.4, 10), darkMetalMat);
+                leg.position.set(lx, 0.2, lz);
+                leg.castShadow = true;
+                group.add(leg);
+            });
+
+            // テーブル上のアートブック＆セラミックマグカップ
+            const book = new THREE.Mesh(
+                new THREE.BoxGeometry(0.38, 0.04, 0.28),
+                new THREE.MeshStandardMaterial({ color: 0x1e3a8a, roughness: 0.6 })
+            );
+            book.position.set(-0.25, 0.475, 0.05);
+            book.rotation.y = 0.18;
+            book.castShadow = true;
+            group.add(book);
+
+            const mug = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.055, 0.05, 0.11, 16),
+                new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.25 })
+            );
+            mug.position.set(0.32, 0.51, -0.04);
+            mug.castShadow = true;
+            group.add(mug);
+            break;
+        }
+        case 'media_tv': {
+            // ローボード本体
+            const cabinet = new THREE.Mesh(new THREE.BoxGeometry(w - 0.1, 0.46, d - 0.18), oakWoodMat);
+            cabinet.position.y = 0.28;
+            cabinet.castShadow = true;
+            cabinet.receiveShadow = true;
+            group.add(cabinet);
+
+            // 超薄型 4K OLED テレビ
+            const bezel = new THREE.Mesh(new THREE.BoxGeometry(1.85, 1.05, 0.05), darkMetalMat);
+            bezel.position.set(0, 1.15, -0.05);
+            bezel.castShadow = true;
+            group.add(bezel);
+
+            // 発光スクリーン（音楽に合わせて波打つビジュアライザー風）
+            const screenMat = new THREE.MeshStandardMaterial({
+                color: 0x0ea5e9,
+                emissive: 0x0284c7,
+                emissiveIntensity: 0.95,
+                roughness: 0.15
+            });
+            const screen = new THREE.Mesh(new THREE.PlaneGeometry(1.76, 0.96), screenMat);
+            screen.position.set(0, 1.15, -0.022);
+            tvScreenMesh = screen;
+            group.add(screen);
+
+            // 両脇のスタジオモニタースピーカー（マイルズ・モラレス風音楽制作部屋オマージュ）
+            [-1.12, 1.12].forEach(sx => {
+                const spk = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.38, 0.26), darkMetalMat);
+                spk.position.set(sx, 0.7, 0.02);
+                spk.castShadow = true;
+                group.add(spk);
+
+                const woofer = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.08, 0.08, 0.03, 20),
+                    new THREE.MeshStandardMaterial({ color: 0xfbbf24, roughness: 0.35, metalness: 0.6 })
+                );
+                woofer.rotation.x = Math.PI / 2;
+                woofer.position.set(sx, 0.65, 0.15);
+                speakerCones.push(woofer);
+                group.add(woofer);
+            });
+            break;
+        }
+        case 'turntable_desk': {
+            // 音楽制作・DJデスク
+            const deskTop = new THREE.Mesh(new THREE.BoxGeometry(w - 0.1, 0.06, d - 0.1), oakWoodMat);
+            deskTop.position.y = 0.76;
+            deskTop.castShadow = true;
+            group.add(deskTop);
+
+            [[-w / 2 + 0.14, -d / 2 + 0.14], [w / 2 - 0.14, -d / 2 + 0.14],
+             [-w / 2 + 0.14, d / 2 - 0.14], [w / 2 - 0.14, d / 2 - 0.14]].forEach(([lx, lz]) => {
+                const leg = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.75, 0.06), darkMetalMat);
+                leg.position.set(lx, 0.375, lz);
+                leg.castShadow = true;
+                group.add(leg);
+            });
+
+            // ターンテーブル本体＆回転するアナログレコード盤
+            const ttBase = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.07, 0.44), darkMetalMat);
+            ttBase.position.set(-0.25, 0.825, 0);
+            ttBase.castShadow = true;
+            group.add(ttBase);
+
+            const vinyl = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.18, 0.18, 0.015, 24),
+                new THREE.MeshStandardMaterial({ color: 0x09090b, roughness: 0.2, metalness: 0.5 })
+            );
+            vinyl.position.set(-0.25, 0.868, 0);
+            vinylDiscMesh = vinyl;
+            group.add(vinyl);
+
+            // MIDIキーボード
+            const midi = new THREE.Mesh(
+                new THREE.BoxGeometry(0.68, 0.05, 0.26),
+                new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.4 })
+            );
+            midi.position.set(0.45, 0.815, 0.05);
+            midi.castShadow = true;
+            group.add(midi);
+            break;
+        }
+        case 'plant_monstera': {
+            // テラコッタ風モダン植木鉢
+            const pot = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.24, 0.18, 0.42, 20),
+                new THREE.MeshStandardMaterial({ color: 0xd6d3d1, roughness: 0.75 })
+            );
+            pot.position.y = 0.21;
+            pot.castShadow = true;
+            pot.receiveShadow = true;
+            group.add(pot);
+
+            // 有機的な観葉植物の葉群
+            const leafMat = new THREE.MeshStandardMaterial({
+                color: 0x15803d,
+                roughness: 0.38,
+                metalness: 0.05,
+                side: THREE.DoubleSide
+            });
+            for (let i = 0; i < 9; i++) {
+                const angle = (i / 9) * Math.PI * 2;
+                const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.018, 0.55, 8), leafMat);
+                stem.position.set(Math.cos(angle) * 0.08, 0.58, Math.sin(angle) * 0.08);
+                stem.rotation.z = -Math.cos(angle) * 0.45;
+                stem.rotation.x = Math.sin(angle) * 0.45;
+                group.add(stem);
+
+                const leaf = new THREE.Mesh(new THREE.SphereGeometry(0.18, 12, 8), leafMat);
+                leaf.scale.set(1.2, 0.12, 0.85);
+                leaf.position.set(Math.cos(angle) * 0.26, 0.78 + (i % 3) * 0.12, Math.sin(angle) * 0.26);
+                leaf.rotation.y = -angle;
+                leaf.rotation.z = -0.35;
+                leaf.castShadow = true;
+                group.add(leaf);
+            }
+            break;
+        }
+        case 'lamp_arc': {
+            const base = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.24, 0.05, 20), darkMetalMat);
+            base.position.y = 0.025;
+            base.castShadow = true;
+            group.add(base);
+
+            const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 2.05, 12), darkMetalMat);
+            pole.position.y = 1.025;
+            pole.castShadow = true;
+            group.add(pole);
+
+            // 温かみのある発光シェード
+            const shadeMat = new THREE.MeshStandardMaterial({
+                color: 0xfef3c7,
+                emissive: 0xf59e0b,
+                emissiveIntensity: 0.85,
+                roughness: 0.5,
+                side: THREE.DoubleSide
+            });
+            const shade = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.28, 0.34, 24, 1, true), shadeMat);
+            shade.position.y = 1.95;
+            group.add(shade);
+            break;
+        }
+        case 'cushion_knit': {
+            const poufMat = new THREE.MeshStandardMaterial({
+                color: 0x0284c7,
+                bumpMap: fabricBump,
+                bumpScale: 0.025,
+                roughness: 0.92
+            });
+            const pouf = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.36, 0.28, 24), poufMat);
+            pouf.position.y = 0.14;
+            pouf.castShadow = true;
+            pouf.receiveShadow = true;
+            group.add(pouf);
+            break;
+        }
+    }
+
+    return group;
+}
+
+// ============================================================================
+// 家具配置・衝突判定・A*経路探索ロジック (ピグ共通コア)
+// ============================================================================
+function getFurnitureDimensions(def, rotation) {
+    return rotation % 2 === 0 ? { w: def.w, d: def.d } : { w: def.d, d: def.w };
+}
+
+function canPlaceFurniture(catalogId, gx, gy, rotation) {
+    const def = FURNITURE_CATALOG.find(f => f.id === catalogId);
+    if (!def) return false;
+    const { w, d } = getFurnitureDimensions(def, rotation);
+    if (gx < 0 || gy < 0 || gx + w > GRID_SIZE || gy + d > GRID_SIZE) return false;
+
+    for (let dx = 0; dx < w; dx++) {
+        for (let dy = 0; dy < d; dy++) {
+            const tx = gx + dx;
+            const ty = gy + dy;
+            const conflict = state.furnitures.some(ex => {
+                const exDef = FURNITURE_CATALOG.find(c => c.id === ex.catalogId);
+                if (exDef.category !== def.category) return false;
+                return tx >= ex.gx && tx < ex.gx + ex.w && ty >= ex.gy && ty < ex.gy + ex.d;
+            });
+            if (conflict) return false;
+        }
+    }
+    return true;
+}
+
+function placeFurniture(catalogId, gx, gy, rotation) {
+    if (!canPlaceFurniture(catalogId, gx, gy, rotation)) return false;
+    const def = FURNITURE_CATALOG.find(f => f.id === catalogId);
+    const { w, d } = getFurnitureDimensions(def, rotation);
+    const uid = Math.random().toString(36).slice(2, 9);
+    const item = { uid, catalogId, gx, gy, w, d, rotation };
+    state.furnitures.push(item);
+
+    const meshGroup = createFurniture3DModel(catalogId, w, d, rotation);
+    const pos = gridToWorld(gx, gy, w, d);
+    meshGroup.position.set(pos.x, 0, pos.z);
+    meshGroup.userData = { uid, catalogId };
+    furnitureGroup.add(meshGroup);
+    furnitureMeshes.set(uid, meshGroup);
+    return true;
+}
+
+function removeFurnitureByUid(uid) {
+    const mesh = furnitureMeshes.get(uid);
+    if (mesh) {
+        furnitureGroup.remove(mesh);
+        furnitureMeshes.delete(uid);
+    }
+    state.furnitures = state.furnitures.filter(f => f.uid !== uid);
+}
+
+function getFurnitureAt(gx, gy, includeRug = true) {
+    for (let i = state.furnitures.length - 1; i >= 0; i--) {
+        const f = state.furnitures[i];
+        const def = FURNITURE_CATALOG.find(c => c.id === f.catalogId);
+        if (!includeRug && def.category === 'floor_decor') continue;
+        if (gx >= f.gx && gx < f.gx + f.w && gy >= f.gy && gy < f.gy + f.d) {
+            return { instance: f, def };
+        }
+    }
+    return null;
+}
+
+function isTileWalkable(gx, gy) {
+    if (gx < 0 || gx >= GRID_SIZE || gy < 0 || gy >= GRID_SIZE) return false;
+    const hit = getFurnitureAt(gx, gy, false);
+    if (hit && hit.def.solid) return false;
+    return true;
+}
+
+function findPath(startX, startY, goalX, goalY) {
+    if (startX === goalX && startY === goalY) return [];
+    if (!isTileWalkable(goalX, goalY)) return [];
+
+    const openSet = [{ x: startX, y: startY, g: 0, h: Math.abs(goalX - startX) + Math.abs(goalY - startY), parent: null }];
+    const closedSet = new Set();
+    const dirs = [{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 0, dy: -1 }];
+
+    while (openSet.length > 0) {
+        openSet.sort((a, b) => (a.g + a.h) - (b.g + b.h));
+        const curr = openSet.shift();
+        const key = `${curr.x},${curr.y}`;
+        if (curr.x === goalX && curr.y === goalY) {
+            const path = [];
+            let node = curr;
+            while (node.parent) {
+                path.unshift({ gx: node.x, gy: node.y });
+                node = node.parent;
+            }
+            return path;
+        }
+        closedSet.add(key);
+        for (const d of dirs) {
+            const nx = curr.x + d.dx;
+            const ny = curr.y + d.dy;
+            if (closedSet.has(`${nx},${ny}`) || !isTileWalkable(nx, ny)) continue;
+            const g = curr.g + 1;
+            const ex = openSet.find(n => n.x === nx && n.y === ny);
+            if (!ex) {
+                openSet.push({ x: nx, y: ny, g, h: Math.abs(goalX - nx) + Math.abs(goalY - ny), parent: curr });
+            } else if (g < ex.g) {
+                ex.g = g;
+                ex.parent = curr;
+            }
+        }
+    }
+    return [];
+}
+
+function initDefaultLoftRoom() {
+    Array.from(furnitureMeshes.keys()).forEach(uid => removeFurnitureByUid(uid));
+    placeFurniture('rug_woven', 3, 4, 0);
+    placeFurniture('sofa_ivory', 3, 3, 0);
+    placeFurniture('table_oak', 4, 5, 0);
+    placeFurniture('media_tv', 4, 0, 0);
+    placeFurniture('turntable_desk', 0, 1, 0);
+    placeFurniture('plant_monstera', 0, 0, 0);
+    placeFurniture('lamp_arc', 1, 7, 0);
+    placeFurniture('cushion_knit', 6, 6, 0);
+
+    avatar.gx = 5;
+    avatar.gy = 7;
+    avatar.visualX = 5;
+    avatar.visualY = 7;
+    avatar.path = [];
+    avatar.action = 'idle';
+    avatar.seatY = 0;
+}
+
+// ============================================================================
+// 3D キャラクターアバター（関節アニメーション付きスタイライズド・ヒーロー）
+// ============================================================================
+const avatar = {
+    gx: 5,
+    gy: 7,
+    visualX: 5,
+    visualY: 7,
+    rotY: 0,
+    path: [],
+    moveSpeed: 3.4,
+    walkPhase: 0,
+    action: 'idle',
+    actionTimer: 0,
+    seatY: 0,
+    pendingSit: false,
+    pendingInteract: null
+};
+
+const avatarRig = new THREE.Group();
+scene.add(avatarRig);
+
+function buildAvatarMesh() {
+    const hoodieMat = new THREE.MeshStandardMaterial({ color: 0xb91c1c, roughness: 0.72 }); // スパイダー風クリムゾンパーカー
+    const vestMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.65 });
+    const pantsMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.78 });
+    const skinMat = new THREE.MeshStandardMaterial({ color: 0xfed7aa, roughness: 0.55 });
+    const hairMat = new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.85 });
+    const shoeMat = new THREE.MeshStandardMaterial({ color: 0xdc2626, roughness: 0.4 });
+
+    // 胴体（フード付きジャケット）
+    const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.16, 0.52, 16), vestMat);
+    torso.position.y = 0.78;
+    torso.castShadow = true;
+    avatarRig.add(torso);
+
+    // 頭部
+    const headGroup = new THREE.Group();
+    headGroup.position.y = 1.24;
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.21, 24, 24), skinMat);
+    head.castShadow = true;
+    headGroup.add(head);
+
+    const hair = new THREE.Mesh(new THREE.SphereGeometry(0.222, 24, 24, 0, Math.PI * 2, 0, Math.PI * 0.56), hairMat);
+    hair.position.y = 0.02;
+    hair.rotation.x = -0.18;
+    headGroup.add(hair);
+
+    // 目
+    const eyeMat = new THREE.MeshBasicMaterial({ color: 0x0f172a });
+    [-0.075, 0.075].forEach(ex => {
+        const eye = new THREE.Mesh(new THREE.SphereGeometry(0.024, 10, 10), eyeMat);
+        eye.position.set(ex, -0.01, 0.195);
+        headGroup.add(eye);
+    });
+    avatarRig.add(headGroup);
+    avatarRig.userData.headGroup = headGroup;
+
+    // 両腕（ピボット付き）
+    const leftArmPivot = new THREE.Group();
+    leftArmPivot.position.set(-0.23, 0.98, 0);
+    const leftArm = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.048, 0.44, 12), hoodieMat);
+    leftArm.position.y = -0.2;
+    leftArm.castShadow = true;
+    leftArmPivot.add(leftArm);
+    avatarRig.add(leftArmPivot);
+
+    const rightArmPivot = new THREE.Group();
+    rightArmPivot.position.set(0.23, 0.98, 0);
+    const rightArm = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.048, 0.44, 12), hoodieMat);
+    rightArm.position.y = -0.2;
+    rightArm.castShadow = true;
+    rightArmPivot.add(rightArm);
+    avatarRig.add(rightArmPivot);
+
+    // 両脚（ピボット付き）
+    const leftLegPivot = new THREE.Group();
+    leftLegPivot.position.set(-0.09, 0.52, 0);
+    const leftLeg = new THREE.Mesh(new THREE.CylinderGeometry(0.068, 0.058, 0.46, 12), pantsMat);
+    leftLeg.position.y = -0.23;
+    leftLeg.castShadow = true;
+    const leftShoe = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.07, 0.2), shoeMat);
+    leftShoe.position.set(0, -0.48, 0.04);
+    leftLegPivot.add(leftLeg, leftShoe);
+    avatarRig.add(leftLegPivot);
+
+    const rightLegPivot = new THREE.Group();
+    rightLegPivot.position.set(0.09, 0.52, 0);
+    const rightLeg = new THREE.Mesh(new THREE.CylinderGeometry(0.068, 0.058, 0.46, 12), pantsMat);
+    rightLeg.position.y = -0.23;
+    rightLeg.castShadow = true;
+    const rightShoe = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.07, 0.2), shoeMat);
+    rightShoe.position.set(0, -0.48, 0.04);
+    rightLegPivot.add(rightLeg, rightShoe);
+    avatarRig.add(rightLegPivot);
+
+    avatarRig.userData.limbs = { leftArmPivot, rightArmPivot, leftLegPivot, rightLegPivot };
+}
+buildAvatarMesh();
+
+// ============================================================================
+// 床カーソルレティクル＆模様替えゴーストプレビュー
+// ============================================================================
+const reticleGeo = new THREE.RingGeometry(0.26, 0.36, 32);
+reticleGeo.rotateX(-Math.PI / 2);
+const reticleMat = new THREE.MeshBasicMaterial({
+    color: 0xfbbf24,
+    transparent: true,
+    opacity: 0.85,
+    side: THREE.DoubleSide
+});
+const floorReticle = new THREE.Mesh(reticleGeo, reticleMat);
+floorReticle.position.y = 0.02;
+floorReticle.visible = false;
+scene.add(floorReticle);
+
+// 開発者デバッグ用：3Dグリッド線＆経路ノード表示グループ
+const debugGridHelper = new THREE.GridHelper(ROOM_SIZE, GRID_SIZE, 0x38bdf8, 0x38bdf8);
+debugGridHelper.position.y = 0.015;
+debugGridHelper.material.transparent = true;
+debugGridHelper.material.opacity = 0.35;
+debugGridHelper.visible = false;
+scene.add(debugGridHelper);
+
+// ============================================================================
+// Web Audio API プロシージャル Lo-Fi チルコードシンセ（外部音声ファイル不要）
+// ============================================================================
+let audioCtx = null;
+let musicInterval = null;
+
+function toggleLoFiAudio() {
+    state.musicPlaying = !state.musicPlaying;
+    const icon = document.getElementById('audioIcon');
+    const btn = document.getElementById('btnAudio');
+
+    if (state.musicPlaying) {
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        icon.textContent = '🎵';
+        btn.classList.add('ps5-btn-active');
+
+        // 温かいジャズ/Lo-Fiテンションコード進行 (Fmaj7 -> Em7 -> Dm7 -> Cmaj7)
+        const chords = [
+            [174.61, 220.00, 261.63, 329.63],
+            [164.81, 196.00, 246.94, 293.66],
+            [146.83, 174.61, 220.00, 261.63],
+            [130.81, 164.81, 196.00, 246.94]
+        ];
+        let step = 0;
+        const playChord = () => {
+            if (!state.musicPlaying || !audioCtx) return;
+            const now = audioCtx.currentTime;
+            const freqs = chords[step % chords.length];
+            step++;
+            freqs.forEach(f => {
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(f, now);
+                gain.gain.setValueAtTime(0.001, now);
+                gain.gain.exponentialRampToValueAtTime(0.032, now + 0.35);
+                gain.gain.exponentialRampToValueAtTime(0.0008, now + 2.4);
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.start(now);
+                osc.stop(now + 2.5);
+            });
+        };
+        playChord();
+        musicInterval = setInterval(playChord, 2600);
+    } else {
+        icon.textContent = '🔇';
+        btn.classList.remove('ps5-btn-active');
+        if (musicInterval) clearInterval(musicInterval);
+    }
+}
+
+// ============================================================================
+// レイキャスティング＆マウス/タッチ操作
+// ============================================================================
+const raycaster = new THREE.Raycaster();
+const pointerNDC = new THREE.Vector2();
+let isDraggingOrbit = false;
+let prevPointer = { x: 0, y: 0 };
+let pointerDragDist = 0;
+
+function updatePointerNDC(clientX, clientY) {
+    pointerNDC.x = (clientX / window.innerWidth) * 2 - 1;
+    pointerNDC.y = -(clientY / window.innerHeight) * 2 + 1;
+}
+
+function getHoveredGridTile() {
+    raycaster.setFromCamera(pointerNDC, camera);
+    const hits = raycaster.intersectObject(floorMesh);
+    if (hits.length > 0) {
+        return worldToGrid(hits[0].point.x, hits[0].point.z);
+    }
+    return null;
+}
+
+renderer.domElement.addEventListener('pointerdown', (e) => {
+    isDraggingOrbit = true;
+    pointerDragDist = 0;
+    prevPointer = { x: e.clientX, y: e.clientY };
+});
+
+window.addEventListener('pointermove', (e) => {
+    updatePointerNDC(e.clientX, e.clientY);
+
+    if (isDraggingOrbit) {
+        const dx = e.clientX - prevPointer.x;
+        const dy = e.clientY - prevPointer.y;
+        pointerDragDist += Math.hypot(dx, dy);
+        prevPointer = { x: e.clientX, y: e.clientY };
+
+        if (pointerDragDist > 5) {
+            camControl.desiredYaw -= dx * 0.0065;
+            camControl.desiredPitch = Math.max(0.18, Math.min(1.25, camControl.desiredPitch + dy * 0.0055));
+        }
+    }
+
+    const tile = getHoveredGridTile();
+    state.hoverTile = tile;
+    if (tile) {
+        const wPos = gridToWorld(tile.gx, tile.gy, 1, 1);
+        floorReticle.visible = true;
+        floorReticle.position.set(wPos.x, 0.025, wPos.z);
+
+        if (state.editMode) {
+            if (state.deleteMode) {
+                reticleMat.color.setHex(0xf43f5e);
+            } else {
+                const valid = canPlaceFurniture(state.selectedCatalogId, tile.gx, tile.gy, state.placementRotation);
+                reticleMat.color.setHex(valid ? 0x10b981 : 0xef4444);
+            }
+        } else {
+            reticleMat.color.setHex(isTileWalkable(tile.gx, tile.gy) ? 0xfbbf24 : 0xef4444);
+        }
+        if (state.debugMode) {
+            document.getElementById('dbgHover').textContent = `(${tile.gx}, ${tile.gy})`;
+        }
+    } else {
+        floorReticle.visible = false;
+    }
+});
+
+window.addEventListener('pointerup', (e) => {
+    isDraggingOrbit = false;
+    if (pointerDragDist > 6) return; // カメラ回転ドラッグ時はクリック判定しない
+
+    updatePointerNDC(e.clientX, e.clientY);
+    const tile = getHoveredGridTile();
+    if (!tile) return;
+
+    if (state.editMode) {
+        if (state.deleteMode) {
+            const hit = getFurnitureAt(tile.gx, tile.gy, true);
+            if (hit) removeFurnitureByUid(hit.instance.uid);
+        } else {
+            placeFurniture(state.selectedCatalogId, tile.gx, tile.gy, state.placementRotation);
+        }
+        return;
+    }
+
+    // 通常プレイ：クリックした家具のインタラクションまたは床へのA*移動
+    const clickedFurn = getFurnitureAt(tile.gx, tile.gy, false);
+    if (clickedFurn && clickedFurn.def.interactive) {
+        if (clickedFurn.def.interactive === 'music') {
+            toggleLoFiAudio();
+            showSpeechBubble(state.musicPlaying ? '🎵 レコードを再生したよ！' : 'レコードを止めたよ');
+            return;
+        } else if (clickedFurn.def.interactive === 'light') {
+            const order = ['sunset', 'rain', 'morning'];
+            const next = order[(order.indexOf(state.lightingPreset) + 1) % order.length];
+            applyLightingPreset(next);
+            updateLightButtonsUI();
+            return;
+        } else if (clickedFurn.def.interactive === 'tv') {
+            toggleLoFiAudio();
+            showSpeechBubble('📺 4Kシアター＆サウンドON！');
+            return;
+        }
+    }
+
+    if (isTileWalkable(tile.gx, tile.gy)) {
+        avatar.pendingSit = !!(clickedFurn && clickedFurn.def.sittable);
+        if (avatar.gx === tile.gx && avatar.gy === tile.gy) {
+            if (avatar.pendingSit) triggerAction('sit');
+            return;
+        }
+        const path = findPath(avatar.gx, avatar.gy, tile.gx, tile.gy);
+        if (path.length > 0) {
+            avatar.path = path;
+        }
+    }
+});
+
+// ホイールズーム
+renderer.domElement.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    camControl.desiredDistance = Math.max(6.5, Math.min(22.0, camControl.desiredDistance + e.deltaY * 0.008));
+}, { passive: false });
+
+// ============================================================================
+// アクション＆吹き出しチャット制御
+// ============================================================================
+function triggerAction(type) {
+    avatar.path = [];
+    if (type === 'sit') {
+        avatar.action = 'sit';
+        const f = getFurnitureAt(avatar.gx, avatar.gy, false);
+        avatar.seatY = (f && f.def.seatY) ? f.def.seatY - 0.22 : 0.05;
+        if (f && f.instance) {
+            avatar.rotY = f.instance.rotation % 2 === 0 ? 0 : Math.PI / 2;
+        }
+    } else if (type === 'wave') {
+        avatar.seatY = 0;
+        avatar.action = 'wave';
+        avatar.actionTimer = 1.6;
+    } else if (type === 'jump') {
+        avatar.seatY = 0;
+        avatar.action = 'jump';
+        avatar.actionTimer = 0.55;
+    }
+}
+
+function showSpeechBubble(text) {
+    const t = text.trim();
+    if (!t) return;
+    state.chatBubble = { text: t, expiresAt: performance.now() + 5200 };
+    renderOverlayDOM();
+}
+
+function showEmote(symbol) {
+    state.emotePop = { symbol, expiresAt: performance.now() + 2600 };
+    renderOverlayDOM();
+}
+
+function renderOverlayDOM() {
+    overlayLayer.innerHTML = '';
+    const now = performance.now();
+    if (state.chatBubble && state.chatBubble.expiresAt > now) {
+        const div = document.createElement('div');
+        div.id = 'activeSpeechBubble';
+        div.className = 'speech-bubble-3d';
+        div.textContent = state.chatBubble.text;
+        overlayLayer.appendChild(div);
+    }
+    if (state.emotePop && state.emotePop.expiresAt > now) {
+        const badge = document.createElement('div');
+        badge.id = 'activeEmoteBadge';
+        badge.className = 'absolute -translate-x-1/2 -translate-y-full ps5-glass rounded-full px-3 py-1 font-extrabold text-base text-amber-300 shadow-lg animate-bounce';
+        badge.textContent = state.emotePop.symbol;
+        overlayLayer.appendChild(badge);
+    }
+}
+
+function projectHeadToScreen() {
+    const headWorld = new THREE.Vector3(avatarRig.position.x, avatarRig.position.y + 1.65, avatarRig.position.z);
+    headWorld.project(camera);
+    return {
+        x: (headWorld.x * 0.5 + 0.5) * window.innerWidth,
+        y: (-headWorld.y * 0.5 + 0.5) * window.innerHeight
+    };
+}
+
+// ============================================================================
+// メインアニメーションループ
+// ============================================================================
+const clock = new THREE.Clock();
+
+function animate() {
+    requestAnimationFrame(animate);
+    const dt = Math.min(0.05, clock.getDelta());
+    const elapsed = clock.getElapsedTime();
+
+    // 1. シネマモード時の自動カメラドリフト
+    if (state.cameraPreset === 'cinema' && !isDraggingOrbit) {
+        camControl.desiredYaw = Math.PI * 0.22 + Math.sin(elapsed * 0.25) * 0.16;
+    }
+
+    // 2. カメラの滑らかなダンピング補間
+    camControl.yaw += (camControl.desiredYaw - camControl.yaw) * 0.1;
+    camControl.pitch += (camControl.desiredPitch - camControl.pitch) * 0.1;
+    camControl.distance += (camControl.desiredDistance - camControl.distance) * 0.1;
+    camControl.target.lerp(camControl.desiredTarget, 0.1);
+
+    camera.position.x = camControl.target.x + camControl.distance * Math.sin(camControl.yaw) * Math.cos(camControl.pitch);
+    camera.position.y = camControl.target.y + camControl.distance * Math.sin(camControl.pitch);
+    camera.position.z = camControl.target.z + camControl.distance * Math.cos(camControl.yaw) * Math.cos(camControl.pitch);
+    camera.lookAt(camControl.target);
+
+    // 3. アバター移動＆関節アニメーション更新
+    const { leftArmPivot, rightArmPivot, leftLegPivot, rightLegPivot } = avatarRig.userData.limbs;
+    let jumpOffsetY = 0;
+
+    if (avatar.path.length > 0) {
+        avatar.action = 'walk';
+        avatar.seatY = 0;
+        const next = avatar.path[0];
+        const dx = next.gx - avatar.visualX;
+        const dy = next.gy - avatar.visualY;
+        const dist = Math.hypot(dx, dy);
+
+        avatar.rotY = Math.atan2(dx, dy);
+        const step = avatar.moveSpeed * dt;
+
+        if (dist <= step) {
+            avatar.visualX = next.gx;
+            avatar.visualY = next.gy;
+            avatar.gx = next.gx;
+            avatar.gy = next.gy;
+            avatar.path.shift();
+
+            if (avatar.path.length === 0) {
+                const furn = getFurnitureAt(avatar.gx, avatar.gy, false);
+                if (avatar.pendingSit || (furn && furn.def.sittable)) {
+                    triggerAction('sit');
+                    avatar.pendingSit = false;
+                } else {
+                    avatar.action = 'idle';
+                }
+            }
+        } else {
+            avatar.visualX += (dx / dist) * step;
+            avatar.visualY += (dy / dist) * step;
+            avatar.walkPhase += dt * 13;
+        }
+
+        // 歩行スイング
+        const swing = Math.sin(avatar.walkPhase) * 0.65;
+        leftLegPivot.rotation.x = swing;
+        rightLegPivot.rotation.x = -swing;
+        leftArmPivot.rotation.x = -swing * 0.75;
+        rightArmPivot.rotation.x = swing * 0.75;
+        jumpOffsetY = Math.abs(Math.sin(avatar.walkPhase)) * 0.06;
+    } else if (avatar.action === 'sit') {
+        leftLegPivot.rotation.x = -Math.PI / 2.2;
+        rightLegPivot.rotation.x = -Math.PI / 2.2;
+        leftArmPivot.rotation.x = -0.25;
+        rightArmPivot.rotation.x = -0.25;
+    } else if (avatar.action === 'wave') {
+        avatar.actionTimer -= dt;
+        leftLegPivot.rotation.x = 0;
+        rightLegPivot.rotation.x = 0;
+        rightArmPivot.rotation.z = 2.6 + Math.sin(elapsed * 14) * 0.35;
+        if (avatar.actionTimer <= 0) {
+            rightArmPivot.rotation.z = 0;
+            avatar.action = 'idle';
+        }
+    } else if (avatar.action === 'jump') {
+        avatar.actionTimer -= dt;
+        jumpOffsetY = Math.sin((1 - avatar.actionTimer / 0.55) * Math.PI) * 0.65;
+        leftArmPivot.rotation.z = -0.6;
+        rightArmPivot.rotation.z = 0.6;
+        if (avatar.actionTimer <= 0) {
+            leftArmPivot.rotation.z = 0;
+            rightArmPivot.rotation.z = 0;
+            avatar.action = 'idle';
+        }
+    } else {
+        // 待機呼吸モーション
+        leftLegPivot.rotation.x *= 0.85;
+        rightLegPivot.rotation.x *= 0.85;
+        leftArmPivot.rotation.x *= 0.85;
+        rightArmPivot.rotation.x *= 0.85;
+        jumpOffsetY = Math.sin(elapsed * 2.5) * 0.015;
+    }
+
+    const wPos = gridToWorld(avatar.visualX, avatar.visualY, 1, 1);
+    avatarRig.position.set(wPos.x, avatar.seatY + jumpOffsetY, wPos.z);
+    avatarRig.rotation.y = avatar.rotY;
+
+    // 4. 環境アニメーション（ホコリ粒子・雨粒・レコード回転・TV発光）
+    const dArr = dustGeo.attributes.position.array;
+    for (let i = 0; i < dustCount; i++) {
+        dArr[i * 3 + 1] += Math.sin(elapsed + i) * 0.0012;
+    }
+    dustGeo.attributes.position.needsUpdate = true;
+
+    if (state.lightingPreset === 'rain') {
+        const rArr = rainGeo.attributes.position.array;
+        for (let i = 0; i < rainCount; i++) {
+            rArr[i * 3 + 1] -= dt * 14;
+            if (rArr[i * 3 + 1] < -2) rArr[i * 3 + 1] = 8;
+        }
+        rainGeo.attributes.position.needsUpdate = true;
+    }
+
+    if (vinylDiscMesh && state.musicPlaying) {
+        vinylDiscMesh.rotation.y += dt * 3.5;
+        speakerCones.forEach((c, idx) => {
+            const pulse = 1 + Math.sin(elapsed * 12 + idx) * 0.08;
+            c.scale.set(pulse, 1, pulse);
+        });
+    }
+
+    if (tvScreenMesh) {
+        const hue = (elapsed * 0.04) % 1;
+        tvScreenMesh.material.emissive.setHSL(hue, 0.75, 0.45);
+        tvGlowLight.color.setHSL(hue, 0.8, 0.55);
+    }
+
+    // 5. 吹き出しHUD位置同期＆デバッグ情報更新
+    const screenHead = projectHeadToScreen();
+    const now = performance.now();
+    const bubbleEl = document.getElementById('activeSpeechBubble');
+    if (bubbleEl) {
+        if (!state.chatBubble || state.chatBubble.expiresAt <= now) {
+            bubbleEl.remove();
+            state.chatBubble = null;
+        } else {
+            bubbleEl.style.left = `${screenHead.x}px`;
+            bubbleEl.style.top = `${screenHead.y - 10}px`;
+        }
+    }
+    const emoteEl = document.getElementById('activeEmoteBadge');
+    if (emoteEl) {
+        if (!state.emotePop || state.emotePop.expiresAt <= now) {
+            emoteEl.remove();
+            state.emotePop = null;
+        } else {
+            emoteEl.style.left = `${screenHead.x}px`;
+            emoteEl.style.top = `${screenHead.y - (bubbleEl ? 58 : 10)}px`;
+        }
+    }
+
+    if (state.debugMode) {
+        document.getElementById('dbgAvatar').textContent = `(${avatar.gx}, ${avatar.gy}) [${avatar.action}]`;
+        document.getElementById('dbgCalls').textContent = renderer.info.render.calls;
+        document.getElementById('dbgTris').textContent = renderer.info.render.triangles;
+    }
+
+    renderer.render(scene, camera);
+}
+
+// ============================================================================
+// UI バインド処理
+// ============================================================================
+function updateLightButtonsUI() {
+    document.querySelectorAll('.light-btn').forEach(b => {
+        b.classList.toggle('ps5-btn-active', b.dataset.light === state.lightingPreset);
+    });
+}
+
+document.querySelectorAll('.light-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        applyLightingPreset(btn.dataset.light);
+        updateLightButtonsUI();
+    });
+});
+
+document.querySelectorAll('.cam-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        setCameraPreset(btn.dataset.cam);
+        document.querySelectorAll('.cam-btn').forEach(b => b.classList.toggle('ps5-btn-cyan', b === btn));
+    });
+});
+
+document.getElementById('btnAudio').addEventListener('click', toggleLoFiAudio);
+
+document.getElementById('btnDebug').addEventListener('click', () => {
+    state.debugMode = !state.debugMode;
+    document.getElementById('debugPanel').classList.toggle('hidden', !state.debugMode);
+    document.getElementById('btnDebug').classList.toggle('ps5-btn-cyan', state.debugMode);
+    debugGridHelper.visible = state.debugMode || state.editMode;
+});
+
+function buildInventoryUI() {
+    const list = document.getElementById('inventoryList');
+    list.innerHTML = '';
+    FURNITURE_CATALOG.forEach(item => {
+        const btn = document.createElement('button');
+        const active = !state.deleteMode && state.selectedCatalogId === item.id;
+        btn.className = `shrink-0 px-3.5 py-2 rounded-xl border text-left transition ${
+            active ? 'bg-amber-400/25 border-amber-400 text-amber-200' : 'bg-white/5 border-white/15 text-slate-200 hover:bg-white/15'
+        }`;
+        btn.innerHTML = `
+            <div class="text-xs font-extrabold">${item.name}</div>
+            <div class="text-[10px] text-slate-400 font-mono">${item.w}×${item.d} TILE</div>
+        `;
+        btn.addEventListener('click', () => {
+            state.deleteMode = false;
+            state.selectedCatalogId = item.id;
+            buildInventoryUI();
+        });
+        list.appendChild(btn);
+    });
+}
+
+document.getElementById('btnEditMode').addEventListener('click', () => {
+    state.editMode = !state.editMode;
+    state.deleteMode = false;
+    debugGridHelper.visible = state.editMode || state.debugMode;
+
+    document.getElementById('editModeText').textContent = state.editMode ? 'もようがえ完了' : 'もようがえ';
+    document.getElementById('normalBottomBar').classList.toggle('hidden', state.editMode);
+    document.getElementById('furnitureInventoryBar').classList.toggle('hidden', !state.editMode);
+    document.getElementById('editControls').classList.toggle('hidden', !state.editMode);
+    document.getElementById('actionMenu').classList.add('hidden');
+    if (state.editMode) buildInventoryUI();
+});
+
+document.getElementById('btnRotateItem').addEventListener('click', () => {
+    state.placementRotation = (state.placementRotation + 1) % 2;
+});
+window.addEventListener('keydown', (e) => {
+    if (state.editMode && (e.key === 'r' || e.key === 'R')) {
+        state.placementRotation = (state.placementRotation + 1) % 2;
+    }
+});
+
+document.getElementById('btnDeleteMode').addEventListener('click', () => {
+    state.deleteMode = !state.deleteMode;
+    document.getElementById('btnDeleteMode').classList.toggle('ps5-btn-active', state.deleteMode);
+    buildInventoryUI();
+});
+
+document.getElementById('btnResetRoom').addEventListener('click', initDefaultLoftRoom);
+
+document.getElementById('btnToggleActions').addEventListener('click', () => {
+    document.getElementById('actionMenu').classList.toggle('hidden');
+});
+
+document.querySelectorAll('.action-trigger').forEach(btn => {
+    btn.addEventListener('click', () => {
+        triggerAction(btn.dataset.action);
+        document.getElementById('actionMenu').classList.add('hidden');
+    });
+});
+
+document.querySelectorAll('.emote-trigger').forEach(btn => {
+    btn.addEventListener('click', () => {
+        showEmote(btn.dataset.emote);
+        document.getElementById('actionMenu').classList.add('hidden');
+    });
+});
+
+document.getElementById('chatForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const input = document.getElementById('chatInput');
+    showSpeechBubble(input.value);
+    input.value = '';
+});
+
+window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// 起動
+window.onload = function () {
+    initDefaultLoftRoom();
+    applyLightingPreset('sunset');
+    showSpeechBubble('ニューヨークのロフト部屋へようこそ！右ドラッグでカメラ回転もできるよ🌆');
+    animate();
+};
+</script>
+
+<!-- ===== アプリ（RAPPER RAISE）との連携用 ===== -->
+<style>
+    body.app-compact header,
+    body.app-compact footer,
+    body.app-compact #debugPanel,
+    body.app-compact #editControls { display: none !important; }
+</style>
+<script>
+(function () {
+    let wanderOn = true;
+    const roles = new Map();
+
+    // アバターの素材を、元の色で「肌・髪・服…」に分類しておく
+    function tagMaterials() {
+        avatarRig.traverse(o => {
+            if (!o.isMesh || roles.has(o.material)) return;
+            const hex = o.material.color.getHex();
+            let role = null;
+            if (o.material.isMeshBasicMaterial) role = 'eye';
+            else if (hex === 0xfed7aa) role = 'skin';
+            else if (hex === 0x18181b) role = 'hair';
+            else if (hex === 0xb91c1c) role = 'top';
+            else if (hex === 0x0f172a) role = 'vest';
+            else if (hex === 0x1e293b) role = 'pants';
+            else if (hex === 0xdc2626) role = 'shoes';
+            roles.set(o.material, { role, mesh: o });
+        });
+    }
+
+    function currentLayout() {
+        return JSON.stringify(state.furnitures.map(f => ({
+            id: f.catalogId, gx: f.gx, gy: f.gy, r: f.rotation
+        })));
+    }
+
+    window.app = {
+        say(t) { showSpeechBubble(t); },
+        emote(s) { showEmote(s); },
+        setCompact(on) {
+            document.body.classList.toggle('app-compact', !!on);
+            camControl.desiredDistance = on ? 19 : 14.5;
+        },
+        setLight(p) {
+            applyLightingPreset(p);
+            if (typeof updateLightButtonsUI === 'function') updateLightButtonsUI();
+        },
+        setLook(look) {
+            tagMaterials();
+            roles.forEach((v, mat) => {
+                if (v.role === 'skin' && look.skin) mat.color.set(look.skin);
+                if (v.role === 'hair' && look.hair) {
+                    mat.color.set(look.hair);
+                    v.mesh.visible = !look.bald;
+                }
+                if (v.role === 'top' && look.top) mat.color.set(look.top);
+                if (v.role === 'vest' && look.top) {
+                    mat.color.set(look.top);
+                    mat.color.multiplyScalar(0.6);
+                }
+                if (v.role === 'pants' && look.pants) mat.color.set(look.pants);
+            });
+            if (look.scale) avatarRig.scale.setScalar(look.scale);
+        },
+        setLayout(list) {
+            if (!Array.isArray(list)) return;
+            Array.from(furnitureMeshes.keys()).forEach(uid => removeFurnitureByUid(uid));
+            list.forEach(f => placeFurniture(f.id, f.gx, f.gy, f.r || 0));
+            lastSent = currentLayout();
+        },
+        resetLayout() {
+            initDefaultLoftRoom();
+        },
+        setWander(on) { wanderOn = !!on; }
+    };
+
+    // 家具の配置が変わったらアプリに知らせる（保存のため）
+    let lastSent = '';
+    setInterval(() => {
+        const now = currentLayout();
+        if (now === lastSent) return;
+        lastSent = now;
+        if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.layout) {
+            window.webkit.messageHandlers.layout.postMessage(now);
+        }
+    }, 1500);
+
+    // ときどき部屋の中を勝手に歩き回る
+    setInterval(() => {
+        if (!wanderOn || state.editMode) return;
+        if (avatar.action === 'sit') {
+            if (Math.random() < 0.25) { avatar.action = 'idle'; avatar.seatY = 0; }
+            return;
+        }
+        if (avatar.path.length > 0 || avatar.action !== 'idle') return;
+        if (Math.random() < 0.3) return;
+        for (let i = 0; i < 15; i++) {
+            const gx = Math.floor(Math.random() * GRID_SIZE);
+            const gy = Math.floor(Math.random() * GRID_SIZE);
+            if (!isTileWalkable(gx, gy) || (gx === avatar.gx && gy === avatar.gy)) continue;
+            const path = findPath(avatar.gx, avatar.gy, gx, gy);
+            if (path.length > 0) { avatar.path = path; break; }
+        }
+    }, 3500);
+})();
+</script>
+</body>
+</html>

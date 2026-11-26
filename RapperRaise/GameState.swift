@@ -79,6 +79,7 @@ struct SaveData: Codable {
     var hunger: Double = 80      // おなか（100で満腹、0でぺこぺこ）
     var lastHungerUpdate = Date()
     var weightOffset: Double = 0 // 食べたもので増減する体重(kg)
+    var room3D = ""              // 3Dの部屋の家具の配置（JSON）
 }
 
 /// 項目が足りない古いデータでも、初期値で補って読めるようにする
@@ -108,6 +109,7 @@ extension SaveData {
         hunger = c.value(.hunger, d.hunger)
         lastHungerUpdate = c.value(.lastHungerUpdate, d.lastHungerUpdate)
         weightOffset = c.value(.weightOffset, d.weightOffset)
+        room3D = c.value(.room3D, d.room3D)
     }
 }
 
