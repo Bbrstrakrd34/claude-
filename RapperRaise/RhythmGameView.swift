@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import UIKit
 import WebKit
 
@@ -28,27 +29,28 @@ struct RhythmGameView: View {
         .background(Color(hex: 0x07080D).ignoresSafeArea())
         .onAppear {
             let game = self.game
+            let c = controller
             let a = game.data.appearance
             let look: [String: String] = [
                 "hoodie": Room3DView.hex(Palette.cloth[a.topColor]),
                 "skin": Room3DView.hex(Palette.skins[a.skin]),
                 "cap": a.hat == .none ? Room3DView.hex(Palette.hair[a.hairColor]) : Room3DView.hex(Palette.cloth[a.hatColor]),
             ]
-            controller.run("rhythm.setLook(\(RhythmController.json(look)))")
+            c.run("rhythm.setLook(\(RhythmController.json(look)))")
 
             // スタートが押されたら、ポイントを払えるか確認する
-            controller.onRequestStart = { [weak controller] in
-                guard let controller else { return }
+            c.onRequestStart = { [weak c] in
+                guard let c else { return }
                 if game.pay(1, minStage: .baby) {
-                    controller.run("rhythm.start()")
+                    c.run("rhythm.start()")
                 } else {
-                    controller.run("rhythm.denied(\(RhythmController.json(game.message)))")
+                    c.run("rhythm.denied(\(RhythmController.json(game.message)))")
                 }
             }
             // ゲームオーバーになったら、うまく跳べた数だけフロウが上がる
-            controller.onGameOver = { [weak controller] perfect, good in
+            c.onGameOver = { [weak c] perfect, good in
                 let gain = game.rewardRhythm(perfect: perfect, good: good)
-                controller?.run("rhythm.showReward(\(RhythmController.json("🌊 フロウ +\(gain)")))")
+                c?.run("rhythm.showReward(\(RhythmController.json("🌊 フロウ +\(gain)")))")
             }
         }
     }
