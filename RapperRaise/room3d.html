@@ -2053,7 +2053,9 @@ window.onload = function () {
         const pupilM = mat('#050505', { roughness: 0.05 });
         const hatM = mat(look.hatColor || '#1c1c1e', { roughness: 0.8 });
         const hatDark = hatM.clone(); hatDark.color.multiplyScalar(0.7);
-        const metal = mat(look.chain === 'silver' ? '#d0d4da' : '#f4c430', { metalness: 1, roughness: 0.28 });
+        // 金属感は控えめにして、自分で少し光らせる（metalness 1 だと映り込む景色がなく真っ黒になる）
+        const metalColor = look.chain === 'silver' ? '#e3e7ec' : '#ffcc33';
+        const metal = mat(metalColor, { metalness: 0.35, roughness: 0.25, emissive: metalColor, emissiveIntensity: 0.28 });
         const blackM = mat('#111111', { metalness: 0.5, roughness: 0.2 });
         const cheekM = mat('#ff8a8a', { transparent: true, opacity: 0.18, roughness: 0.6 });
 
@@ -2277,9 +2279,9 @@ window.onload = function () {
 
         // ---- チェーン ----
         if (look.chain && look.chain !== 'none' && !isBaby) {
-            const chain = add(new THREE.TorusGeometry(0.085 * B.w, 0.007, 8, 40), metal, avatarRig, 0, torsoBase + T * 0.93, 0.035);
+            const chain = add(new THREE.TorusGeometry(0.085 * B.w, 0.012, 8, 40), metal, avatarRig, 0, torsoBase + T * 0.93, 0.035);
             chain.rotation.x = Math.PI / 2 - 0.45;
-            add(new THREE.SphereGeometry(0.02, 12, 10), metal, avatarRig, 0, torsoBase + T * 0.83, 0.12);
+            add(new THREE.SphereGeometry(0.026, 12, 10), metal, avatarRig, 0, torsoBase + T * 0.83, 0.12);
         }
 
         avatarRig.userData.limbs = limbs;

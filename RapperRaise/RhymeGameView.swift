@@ -31,7 +31,7 @@ struct RhymeGameView: View {
                 Spacer()
             }
             .padding()
-            .navigationTitle("韻踏みチャレンジ")
+            .navigationTitle("韻踏練習")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

@@ -218,7 +218,7 @@ struct MenuView: View {
                     row(.rhythm, "🥁", "リズム練習", "1pt")
                     row(.cypher, "🔥", "サイファー", game.stage < .kid ? "3歳から" : "2pt")
                         .disabled(game.stage < .kid)
-                    row(.rhyme, "🎤", "韻踏みチャレンジ", "無料")
+                    row(.rhyme, "🎤", "韻踏練習", "無料")
                 }
                 Section("見た目") {
                     row(.closet, "👕", "着せ替え", nil)

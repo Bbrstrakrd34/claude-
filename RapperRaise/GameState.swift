@@ -327,7 +327,8 @@ final class GameState: ObservableObject {
     }
 
     /// サイファーの結果
-    func rewardCypher(win: Bool) {
+    /// rhymes: バトル中に踏んだ韻の数。その数だけボーナスポイント
+    func rewardCypher(win: Bool, rhymes: Int = 0) {
         let beforeAge = age, beforeStage = stage
         var d = data
         if win {
@@ -339,6 +340,8 @@ final class GameState: ObservableObject {
             d.stats.guts += 2
             d.stats.lyric += 1
         }
+        d.points += rhymes
+        d.stats.lyric += rhymes / 2
         data = d
         celebrate(beforeAge: beforeAge, beforeStage: beforeStage,
                   otherwise: win ? "🏆 サイファーで勝った！" : "😤 サイファーで負けた…次は勝つ")
@@ -412,7 +415,7 @@ final class GameState: ObservableObject {
         }
     }
 
-    // MARK: 韻踏みチャレンジ
+    // MARK: 韻踏練習
 
     func isUsedRhyme(prompt: String, answer: String) -> Bool {
         let used = UserDefaults.standard.stringArray(forKey: usedRhymesKey) ?? []
@@ -431,7 +434,7 @@ final class GameState: ObservableObject {
         d.points += gained
         d.stats.lyric += 2
         data = d
-        celebrate(beforeAge: beforeAge, beforeStage: beforeStage, otherwise: "🎤 韻踏み成功！ +\(gained)pt")
+        celebrate(beforeAge: beforeAge, beforeStage: beforeStage, otherwise: "🎤 韻踏練習 成功！ +\(gained)pt")
         return gained
     }
 

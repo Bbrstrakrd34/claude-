@@ -1,4 +1,5 @@
 import SwiftUI
+import Foundation
 import Combine
 import UIKit
 import WebKit
@@ -68,7 +69,6 @@ enum BattleJudge {
         let clean = reply.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { return (0, "何も言えてない…") }
         var score = min(Double(clean.count) / 12.0, 2.0)
-        if rhymes(diss, clean) { score += 2 }
         score += Double.random(in: 0...1.5)
         let votes = min(5, max(0, Int(score.rounded())))
         let good = ["切り返しキマった！", "会場わいてる！", "うまい返し！"]
@@ -76,15 +76,91 @@ enum BattleJudge {
         return (votes, (votes >= 3 ? good : bad).randomElement()!)
     }
 
-    /// 最後の2音の母音が同じなら韻を踏んでいるとみなす
-    private static func rhymes(_ a: String, _ b: String) -> Bool {
-        func tail(_ s: String) -> [Character]? {
-            let kana = s.filter { !$0.isPunctuation && !$0.isWhitespace && !"「」！？!?、。".contains($0) }
-            guard let v = Rhyme.vowels(of: String(kana.suffix(3))) else { return nil }
-            return Array(v.suffix(2))
+}
+
+// MARK: - 韻の数をかぞえる（漢字まじりの文も読みに変換して比べる）
+
+enum RhymeCounter {
+    struct Word {
+        let text: String
+        let vowels: [Character]
+    }
+
+    /// 文を単語に分けて、それぞれの母音の並びを出す
+    static func words(_ text: String) -> [Word] {
+        let cf = text as CFString
+        let range = CFRangeMake(0, CFStringGetLength(cf))
+        guard let tk = CFStringTokenizerCreate(kCFAllocatorDefault, cf, range,
+                                               CFOptionFlags(kCFStringTokenizerUnitWordBoundary),
+                                               Locale(identifier: "ja_JP") as CFLocale) else { return [] }
+        let ns = text as NSString
+        var out: [Word] = []
+        var type = CFStringTokenizerAdvanceToNextToken(tk)
+        while !type.isEmpty {
+            let r = CFStringTokenizerGetCurrentTokenRange(tk)
+            let word = ns.substring(with: NSRange(location: r.location, length: r.length))
+            var v = Rhyme.vowels(of: word)
+            if v == nil,
+               let latin = CFStringTokenizerCopyCurrentTokenAttribute(tk, kCFStringTokenizerAttributeLatinTranscription) as? String {
+                v = vowels(romaji: latin)
+            }
+            if let v, !v.isEmpty { out.append(Word(text: word, vowels: v)) }
+            type = CFStringTokenizerAdvanceToNextToken(tk)
         }
-        guard let x = tail(a), let y = tail(b) else { return false }
-        return x == y
+        return out
+    }
+
+    /// ローマ字 → 母音の並び（a i u e o / N=ん）
+    static func vowels(romaji: String) -> [Character]? {
+        let folded = romaji.lowercased()
+            .replacingOccurrences(of: "ā", with: "aa").replacingOccurrences(of: "ī", with: "ii")
+            .replacingOccurrences(of: "ū", with: "uu").replacingOccurrences(of: "ē", with: "ee")
+            .replacingOccurrences(of: "ō", with: "oo").replacingOccurrences(of: "â", with: "aa")
+            .replacingOccurrences(of: "î", with: "ii").replacingOccurrences(of: "û", with: "uu")
+            .replacingOccurrences(of: "ê", with: "ee").replacingOccurrences(of: "ô", with: "oo")
+        let chars = Array(folded)
+        var result: [Character] = []
+        for (i, c) in chars.enumerated() {
+            if "aiueo".contains(c) {
+                result.append(c)
+            } else if c == "n" {
+                let next: Character? = i + 1 < chars.count ? chars[i + 1] : nil
+                if next == nil || !"aiueoy".contains(next!) { result.append("N") }
+            } else if c == "-", let last = result.last {
+                result.append(last)
+            }
+        }
+        for i in result.indices.dropFirst() {
+            if result[i] == "u" && result[i - 1] == "o" { result[i] = "o" }
+            if result[i] == "i" && result[i - 1] == "e" { result[i] = "e" }
+        }
+        return result.isEmpty ? nil : result
+    }
+
+    /// 後ろから何音、母音がそろっているか
+    private static func commonTail(_ a: [Character], _ b: [Character]) -> Int {
+        var n = 0
+        while n < a.count, n < b.count, a[a.count - 1 - n] == b[b.count - 1 - n] { n += 1 }
+        return n
+    }
+
+    /// 言い返しの中で韻を踏んでいる数（相手のディスの言葉、または自分の別の言葉と、
+    /// 後ろ3音がそろえば1つ、4音以上そろえば2つ）
+    static func count(reply: String, diss: String) -> Int {
+        let mine = words(reply).filter { $0.vowels.count >= 3 }
+        let theirs = words(diss).filter { $0.vowels.count >= 3 }
+        var total = 0
+        for (i, w) in mine.enumerated() {
+            var best = 0
+            for (j, o) in mine.enumerated() where j != i && o.text != w.text {
+                best = max(best, commonTail(w.vowels, o.vowels))
+            }
+            for o in theirs where o.text != w.text {
+                best = max(best, commonTail(w.vowels, o.vowels))
+            }
+            if best >= 4 { total += 2 } else if best >= 3 { total += 1 }
+        }
+        return min(total, 10)
     }
 }
 
@@ -197,6 +273,9 @@ struct CypherView: View {
     @State private var foeHP = 2
     @State private var won = false
     @State private var notice = ""
+    @State private var timeLeft = 30
+    @State private var timerTask: Task<Void, Never>?
+    @State private var totalRhymes = 0
     @FocusState private var focused: Bool
 
     private struct Fighter: Encodable {
@@ -236,6 +315,7 @@ struct CypherView: View {
         }
         .background(Color(hex: 0x11131A).ignoresSafeArea())
         .onAppear { disses = Disses.pick(age: game.age) }
+        .onDisappear { timerTask?.cancel() }
         .onChange(of: battle.introDone) { _, done in
             if done && phase == .intro { Task { await rivalTurn() } }
         }
@@ -247,7 +327,7 @@ struct CypherView: View {
         switch phase {
         case .ready:
             VStack(spacing: 12) {
-                Text("街でライバルと肩がぶつかる…！\n言い返して観客の旗を取れ。先にHPが2つなくなったほうの負け。")
+                Text("街でライバルと肩がぶつかる…！\n30秒以内に言い返して観客の旗を取れ。\n韻を踏めば踏むほど旗とポイントが増える！")
                     .font(.callout)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.white.opacity(0.85))
@@ -260,7 +340,18 @@ struct CypherView: View {
             Text("…").foregroundStyle(.white.opacity(0.6))
         case .playerTurn:
             VStack(spacing: 10) {
-                TextField("言い返せ！", text: $reply, axis: .vertical)
+                HStack {
+                    Text("⏱ \(timeLeft)秒")
+                        .font(.system(size: 22, weight: .heavy, design: .monospaced))
+                        .foregroundStyle(timeLeft <= 10 ? .red : .white)
+                        .contentTransition(.numericText())
+                    Spacer()
+                    let live = RhymeCounter.count(reply: reply, diss: currentDiss)
+                    Text("🎤 韻 ×\(live)")
+                        .font(.system(size: 18, weight: .heavy, design: .monospaced))
+                        .foregroundStyle(live > 0 ? .yellow : .white.opacity(0.5))
+                }
+                TextField("言い返せ！（韻を踏むほど強い）", text: $reply, axis: .vertical)
                     .lineLimit(2...3)
                     .padding(12)
                     .background(Color(hex: 0xF8F6E8), in: RoundedRectangle(cornerRadius: 8))
@@ -281,6 +372,11 @@ struct CypherView: View {
             VStack(spacing: 12) {
                 Text(won ? "🏆 勝利！ 度胸・リリック・人気アップ ＋3pt" : "😤 負けた… 度胸とリリックが少し上がった")
                     .foregroundStyle(.white)
+                if totalRhymes > 0 {
+                    Text("🎤 踏んだ韻 ×\(totalRhymes) → ボーナス ＋\(totalRhymes)pt")
+                        .foregroundStyle(.yellow)
+                        .font(.callout.bold())
+                }
                 HStack(spacing: 10) {
                     pixelButton("もう1戦", color: Color(hex: 0xDC2626)) { rematch() }
                     pixelButton("もどる", color: Color(hex: 0x475569)) { dismiss() }
@@ -340,21 +436,55 @@ struct CypherView: View {
         try? await Task.sleep(for: .seconds(Double(diss.count) / 32 + 1.4))
         battle.run("battle.hit('player')")
         try? await Task.sleep(for: .seconds(0.6))
-        battle.say(["\(game.data.name)は どう いいかえす？"])
+        battle.say(["\(game.data.name)は どう いいかえす？", "のこり 30びょう！"])
         phase = .playerTurn
         focused = true
+        startTimer()
     }
 
-    private func submit() {
+    private var currentDiss: String {
+        disses.isEmpty ? "" : disses[round % disses.count]
+    }
+
+    /// 30秒のカウントダウン。0になったら今書いてある言葉で勝負する
+    private func startTimer() {
+        timerTask?.cancel()
+        timeLeft = 30
+        timerTask = Task {
+            while timeLeft > 0 {
+                try? await Task.sleep(for: .seconds(1))
+                if Task.isCancelled { return }
+                withAnimation { timeLeft -= 1 }
+            }
+            if phase == .playerTurn { submit(timeUp: true) }
+        }
+    }
+
+    private func submit(timeUp: Bool = false) {
         let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        guard !text.isEmpty || timeUp else { return }
+        timerTask?.cancel()
         focused = false
-        let diss = disses.isEmpty ? "" : disses[round % disses.count]
+        let diss = currentDiss
         Task {
             phase = .judging
-            battle.say(["\(game.data.name)の いいかえし！", "「\(text)」"])
-            let (v, comment) = await BattleJudge.judge(diss: diss, reply: text, age: game.age)
-            try? await Task.sleep(for: .seconds(max(1.2, Double(text.count) / 32)))
+            let v: Int
+            let comment: String
+            if text.isEmpty {
+                battle.say(["じかんぎれ！", "\(game.data.name)は なにも いえなかった…"])
+                v = 0
+                comment = "時間切れ…"
+                try? await Task.sleep(for: .seconds(1.6))
+            } else {
+                battle.say(["\(game.data.name)の いいかえし！", "「\(text)」"])
+                // 韻を踏んだ数だけ、観客の旗が増える
+                let rhymes = RhymeCounter.count(reply: text, diss: diss)
+                totalRhymes += rhymes
+                let (base, c) = await BattleJudge.judge(diss: diss, reply: text, age: game.age)
+                v = min(5, base + rhymes)
+                comment = rhymes > 0 ? "韻×\(rhymes)！ \(c)" : c
+                try? await Task.sleep(for: .seconds(max(1.2, Double(text.count) / 32)))
+            }
             let flags = (Array(repeating: true, count: v) + Array(repeating: false, count: 5 - v)).shuffled()
             battle.run("battle.flags(\(BattleController.json(flags)))")
             try? await Task.sleep(for: .seconds(2.4))
@@ -381,6 +511,7 @@ struct CypherView: View {
     }
 
     private func forfeit() {
+        timerTask?.cancel()
         myHP = 0
         battle.run("battle.setHP(0, \(foeHP))")
         finish()
@@ -388,7 +519,7 @@ struct CypherView: View {
 
     private func finish() {
         won = foeHP <= 0 && myHP > 0
-        game.rewardCypher(win: won)
+        game.rewardCypher(win: won, rhymes: totalRhymes)
         battle.run("battle.end(\(won))")
         battle.say(won ? ["\(opponentName)は マイクを おとした！", "\(game.data.name)の しょうり！"]
                        : ["\(game.data.name)は いいかえせなかった…", "つぎは ぜったい かつ！"])
@@ -401,6 +532,7 @@ struct CypherView: View {
         foeHP = 2
         reply = ""
         notice = ""
+        totalRhymes = 0
         opponentName = Disses.names.randomElement()!
         disses = Disses.pick(age: game.age)
         phase = .ready
