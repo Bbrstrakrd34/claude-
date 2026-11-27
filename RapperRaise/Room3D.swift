@@ -158,9 +158,13 @@ struct Room3DView: UIViewRepresentable {
     }
 
     private func lookJSON() -> String {
-        let a = lookOverride ?? game.data.appearance
+        Self.lookJSON(lookOverride ?? game.data.appearance, stage: stageOverride ?? game.stage)
+    }
+
+    /// 見た目を JavaScript に渡す形(JSON)にする。街の画面でも使う
+    static func lookJSON(_ a: Appearance, stage: Stage) -> String {
         let stageName: String
-        switch stageOverride ?? game.stage {
+        switch stage {
         case .baby: stageName = "baby"
         case .kid: stageName = "kid"
         case .teen: stageName = "teen"
@@ -168,18 +172,18 @@ struct Room3DView: UIViewRepresentable {
         }
         let look = JSLook(
             stage: stageName,
-            skin: Self.hex(Palette.skins[a.skin]),
+            skin: hex(Palette.skins[a.skin]),
             hairStyle: a.hair.rawValue,
-            hairColor: Self.hex(Palette.hair[a.hairColor]),
+            hairColor: hex(Palette.hair[a.hairColor]),
             top: a.top.rawValue,
-            topColor: Self.hex(Palette.cloth[a.topColor]),
+            topColor: hex(Palette.cloth[a.topColor]),
             build: a.build.rawValue,
             eyes: a.eyes.rawValue,
             brows: a.brows.rawValue,
             mouth: a.mouth.rawValue,
             beard: a.beard.rawValue,
             hat: a.hat.rawValue,
-            hatColor: Self.hex(Palette.cloth[a.hatColor]),
+            hatColor: hex(Palette.cloth[a.hatColor]),
             glasses: a.glasses.rawValue,
             chain: a.chain.rawValue,
             earring: a.earring,

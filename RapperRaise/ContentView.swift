@@ -3,7 +3,7 @@ import SwiftUI
 // MARK: - メニューの項目
 
 enum MenuAction: Identifiable {
-    case food, workout, dance, rhythm, cypher, rhyme, closet, room, status, steps, voice, reset
+    case city, food, workout, dance, rhythm, cypher, rhyme, closet, room, status, steps, voice, reset
     var id: Self { self }
 }
 
@@ -19,6 +19,7 @@ struct ContentView: View {
     @State private var showRhyme = false
     @State private var showCloset = false
     @State private var showStatus = false
+    @State private var showCity = false
     @State private var editing = false
     @State private var selectedFurniture: String? = "sofa_ivory"
     @State private var deleteMode = false
@@ -95,7 +96,7 @@ struct ContentView: View {
                 try? await Task.sleep(for: .seconds(Double.random(in: 10...18)))
                 if Task.isCancelled { break }
                 game.refreshIdle()
-                if !editing { game.talk() }
+                if !editing && !showCity { game.talk() }
             }
         }
         .sheet(isPresented: $showMenu, onDismiss: runPending) {
@@ -107,6 +108,7 @@ struct ContentView: View {
         .sheet(isPresented: $showStatus) { StatusView().environmentObject(game) }
         .fullScreenCover(isPresented: $showRhythm) { RhythmGameView().environmentObject(game) }
         .fullScreenCover(isPresented: $showCypher) { CypherView().environmentObject(game) }
+        .fullScreenCover(isPresented: $showCity) { CityView().environmentObject(game) }
         .alert("最初からやり直す？", isPresented: $confirmReset) {
             Button("やり直す", role: .destructive) { game.resetAll() }
             Button("キャンセル", role: .cancel) {}
@@ -183,6 +185,7 @@ struct ContentView: View {
         guard let action = pending else { return }
         pending = nil
         switch action {
+        case .city: showCity = true
         case .food: showFood = true
         case .workout: game.exercise(.workout)
         case .dance: game.exercise(.dance)
@@ -209,6 +212,9 @@ struct MenuView: View {
     var body: some View {
         NavigationStack {
             List {
+                Section("おでかけ") {
+                    row(.city, "🏙", "街に出る", "歩いて探検")
+                }
                 Section("育てる（成長ポイントが増える）") {
                     row(.food, "🍽", "ごはんをあげる", "ポイントを使う")
                     row(.workout, "💪", "筋トレ", "いつでも・成長+2・度胸+1")
