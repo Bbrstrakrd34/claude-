@@ -327,6 +327,42 @@ final class GameState: ObservableObject {
     }
 
     /// サイファーの結果
+    // MARK: 街
+
+    /// 街の人に話しかけた（1回の外出で1人につき1回）
+    func rewardTalk() {
+        data.stats.fame += 1
+        message = "⭐️ 街の人と話して 人気+1"
+    }
+
+    /// 街のステージでライブ（18歳から）。できたら true
+    func performLive() -> Bool {
+        guard stage >= .rookie else {
+            message = "ステージは18歳から！"
+            return false
+        }
+        guard Date().timeIntervalSince(lastExercise) > 6 else {
+            message = "ちょっと休憩中…"
+            return false
+        }
+        guard data.hunger >= 15 else {
+            message = "おなかがすいてライブできない…ごはんを食べよう"
+            return false
+        }
+        lastExercise = Date()
+        let beforeAge = age, beforeStage = stage
+        var d = data
+        d.growth += 2
+        d.hunger = max(0, d.hunger - 8)
+        d.stats.fame += 3
+        d.stats.flow += 1
+        d.points += 1
+        data = d
+        talk(["みんな、声出していこうぜ！", "このステージ、最高だ", "ありがとう！また来るぜ"].randomElement()!)
+        celebrate(beforeAge: beforeAge, beforeStage: beforeStage, otherwise: "🎤 ライブ大成功！ 人気+3・+1pt")
+        return true
+    }
+
     /// rhymes: バトル中に踏んだ韻の数。その数だけボーナスポイント
     func rewardCypher(win: Bool, rhymes: Int = 0) {
         let beforeAge = age, beforeStage = stage

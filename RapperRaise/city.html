@@ -30,6 +30,12 @@
     #toast { position: fixed; left: 50%; bottom: calc(190px + env(safe-area-inset-bottom)); transform: translateX(-50%) translateY(10px);
         z-index: 6; padding: 10px 18px; border-radius: 999px; background: rgba(15,15,18,0.8); color: #fff; font-weight: 800;
         font-size: 15px; opacity: 0; transition: all .25s; pointer-events: none; white-space: nowrap; }
+    #bubble { position: fixed; z-index: 4; transform: translate(-50%, -100%) scale(0.8); max-width: 240px; padding: 9px 14px;
+        border-radius: 16px; background: #fff; color: #1b1b1b; font-size: 14px; font-weight: 700; line-height: 1.4;
+        box-shadow: 0 4px 14px rgba(0,0,0,0.3); opacity: 0; transition: opacity .2s, transform .2s; pointer-events: none; }
+    #bubble::after { content: ''; position: absolute; left: 50%; bottom: -8px; transform: translateX(-50%);
+        border-width: 9px 8px 0; border-style: solid; border-color: #fff transparent transparent; }
+    #bubble.show { opacity: 1; transform: translate(-50%, -100%) scale(1); }
     #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 </style>
 </head>
@@ -39,6 +45,7 @@
 <div id="stick"><div id="knob"></div></div>
 <button id="action">🏠 家に入る</button>
 <div id="toast"></div>
+<div id="bubble"></div>
 <script>
 /**
  * @license
@@ -74,7 +81,9 @@ scene.fog = new THREE.Fog(SKY, 38, 95);
 
 const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 220);
 
-scene.add(new THREE.HemisphereLight('#e4ecf3', '#5b4b3f', 0.8));
+const hemi = new THREE.HemisphereLight('#e4ecf3', '#5b4b3f', 0.8);
+scene.add(hemi);
+const sunOffset = new THREE.Vector3(16, 32, 14);
 const sun = new THREE.DirectionalLight('#ffe6c2', 1.15);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
@@ -93,6 +102,7 @@ function pick(a) { return a[Math.floor(rnd() * a.length)]; }
 const colliders = [];   // {x0,x1,z0,z1,h}
 function solid(x0, x1, z0, z1, h, nocam) { colliders.push({ nocam: !!nocam, x0: Math.min(x0, x1), x1: Math.max(x0, x1), z0: Math.min(z0, z1), z1: Math.max(z0, z1), h: h || 10 }); }
 const BOUNDS = { x0: -39, x1: 39, z0: -8.6, z1: 28.6 };
+const EAST_X1 = 77;   // ステージ地区が開いたときの右端
 
 // ---------------------------------------------------------------- 素材
 const matCache = {};
@@ -141,7 +151,7 @@ const sidewalkTex = canvasTex(256, 256, (g, w, h) => {
     g.strokeRect(0, 0, w, h); g.beginPath(); g.moveTo(w / 2, 0); g.lineTo(w / 2, h); g.moveTo(0, h / 2); g.lineTo(w, h / 2); g.stroke();
     g.fillStyle = 'rgba(40,40,40,0.25)';
     for (let i = 0; i < 6; i++) { g.beginPath(); g.arc(rnd() * w, rnd() * h, 3 + rnd() * 5, 0, 7); g.fill(); }  // ガムのしみ
-}, 40, 2);
+}, 66, 2);
 // 土
 const dirtTex = canvasTex(256, 256, (g, w, h) => {
     g.fillStyle = '#6b5a47'; g.fillRect(0, 0, w, h);
@@ -151,9 +161,17 @@ const dirtTex = canvasTex(256, 256, (g, w, h) => {
 }, 6, 6);
 
 // レンガの壁（窓つき）
+const facadeMats = [];
+// レンガの壁のマテリアル（夜は明かりのついた窓が光る）
+function facadeMat(tex, rough) {
+    const m = new THREE.MeshStandardMaterial({ map: tex, roughness: rough || 0.9, emissive: '#ffffff', emissiveMap: tex.userData.glow, emissiveIntensity: 0 });
+    facadeMats.push(m);
+    return m;
+}
 function facadeTex(opts) {
     const cw = 512, ch = Math.min(2048, Math.round(512 * opts.h / opts.w));
-    return canvasTex(cw, ch, (g, w, h) => {
+    const litRects = [];
+    const tex = canvasTex(cw, ch, (g, w, h) => {
         g.fillStyle = shade(opts.brick, 0.55); g.fillRect(0, 0, w, h);
         const bh = 7, bw = 18;
         for (let y = 0, r = 0; y < h; y += bh, r++) {
@@ -176,6 +194,7 @@ function facadeTex(opts) {
             const top = h - (f + 1) * fh;
             if (f === 0) {
                 if (opts.ground === 'shutter') {
+                    litRects.push(null);
                     // 1階はシャッターの閉まったお店
                     g.fillStyle = '#2b2b2e'; g.fillRect(cwid * 0.25, top + fh * 0.12, w - cwid * 0.5, fh * 0.88);
                     g.fillStyle = '#8b8f94'; g.fillRect(cwid * 0.3, top + fh * 0.18, w - cwid * 0.6, fh * 0.82);
@@ -198,7 +217,8 @@ function facadeTex(opts) {
                     for (let k = 1; k < 4; k++) { g.beginPath(); g.moveTo(x, y + wh * k / 4); g.lineTo(x + ww, y + wh * k / 4); g.stroke(); }
                     g.beginPath(); g.moveTo(x, y); g.lineTo(x + ww, y + wh); g.stroke();
                 } else {
-                    const lit = kind > 0.78;
+                    const lit = kind > 0.62;
+                    if (lit) litRects.push([x, y, ww, wh]);
                     const grd = g.createLinearGradient(x, y, x + ww, y + wh);
                     if (lit) { grd.addColorStop(0, '#ffe2a3'); grd.addColorStop(1, '#e9a948'); }
                     else { grd.addColorStop(0, '#5d6c7a'); grd.addColorStop(0.5, '#2c3540'); grd.addColorStop(1, '#45525f'); }
@@ -214,6 +234,12 @@ function facadeTex(opts) {
             }
         }
     });
+    tex.userData = tex.userData || {};
+    tex.userData.glow = canvasTex(cw, ch, (g, w, h) => {
+        g.fillStyle = '#000000'; g.fillRect(0, 0, w, h);
+        litRects.forEach(r => { if (!r) return; g.fillStyle = '#ffcf7a'; g.fillRect(r[0] + 2, r[1] + 2, r[2] - 4, r[3] - 4); });
+    });
+    return tex;
 }
 
 // グラフィティ（オリジナルの文字）
@@ -251,11 +277,12 @@ const groundMat = new THREE.MeshStandardMaterial({ color: '#56514b', roughness: 
 const ground = mesh(new THREE.PlaneGeometry(260, 260), groundMat, 0, -0.01, 0);
 ground.rotation.x = -Math.PI / 2;
 
-const street = mesh(new THREE.PlaneGeometry(120, 10), new THREE.MeshStandardMaterial({ map: asphaltTex, roughness: 0.95 }), 0, 0, 0);
+const street = mesh(new THREE.PlaneGeometry(200, 10), new THREE.MeshStandardMaterial({ map: asphaltTex, roughness: 0.95 }), 20, 0, 0);
+asphaltTex.repeat.set(20, 2);
 street.rotation.x = -Math.PI / 2;
 // 中央線
 const yellow = M('#d9b232', { roughness: 0.6 });
-[-0.12, 0.12].forEach(z => { const l = mesh(new THREE.PlaneGeometry(120, 0.1), yellow, 0, 0.012, z); l.rotation.x = -Math.PI / 2; l.castShadow = false; });
+[-0.12, 0.12].forEach(z => { const l = mesh(new THREE.PlaneGeometry(200, 0.1), yellow, 20, 0.012, z); l.rotation.x = -Math.PI / 2; l.castShadow = false; });
 // 横断歩道
 for (let i = 0; i < 8; i++) {
     const s = mesh(new THREE.PlaneGeometry(0.6, 9.4), M('#e7e5df', { roughness: 0.6 }), 24 + i * 1.1, 0.013, 0);
@@ -274,8 +301,8 @@ manhole.rotation.x = -Math.PI / 2; manhole.castShadow = false;
 const swMat = new THREE.MeshStandardMaterial({ map: sidewalkTex, roughness: 0.95 });
 const curbMat = M('#7c7a76');
 [-7, 7].forEach(z => {
-    box(120, 0.15, 4, swMat, 0, 0.075, z);
-    box(120, 0.17, 0.18, curbMat, 0, 0.085, z > 0 ? 5.05 : -5.05);
+    box(200, 0.15, 4, swMat, 20, 0.075, z);
+    box(200, 0.17, 0.18, curbMat, 20, 0.085, z > 0 ? 5.05 : -5.05);
 });
 
 // ---------------------------------------------------------------- 北側：古いアパートの並び
@@ -324,7 +351,7 @@ widths.forEach((w, i) => {
     const cols = Math.max(3, Math.round(w / 2.6));
     const tex = facadeTex({ w: w, h: h, floors: floors, cols: cols, brick: brick, ground: (i === HOME_INDEX || i === 3 || i === 5) ? 'door' : 'shutter' });
     const side = new THREE.MeshStandardMaterial({ color: shade(brick, 0.7), roughness: 0.95 });
-    const frontMat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.9 });
+    const frontMat = facadeMat(tex, 0.9);
     const b = mesh(new THREE.BoxGeometry(w - 0.05, h, depth), [side, side, M('#3b3836'), side, frontMat, side], cx, h / 2, front - depth / 2);
     solid(bx, bx + w, front - depth, front, h);
     // 屋上のふち
@@ -403,7 +430,7 @@ widths.forEach((w, i) => {
     const x0 = -40, x1 = -24, z0 = 9, z1 = 21, h = 7;
     const tex = facadeTex({ w: 16, h: h, floors: 2, cols: 5, brick: '#b48a5a', ground: 'none' });
     const side = M('#7d6040');
-    mesh(new THREE.BoxGeometry(16, h, 12), [side, side, M('#3b3836'), side, side, new THREE.MeshStandardMaterial({ map: tex })], -32, h / 2, 15);
+    mesh(new THREE.BoxGeometry(16, h, 12), [side, side, M('#3b3836'), side, side, facadeMat(tex)], -32, h / 2, 15);
     // 店の正面（北向き＝道路側）
     // ガラスの店先
     const glass = mesh(new THREE.PlaneGeometry(10, 2.2), new THREE.MeshStandardMaterial({ color: '#ffd98a', emissive: '#ffcf70', emissiveIntensity: 0.45, roughness: 0.2 }), -32, 1.5, 8.97);
@@ -523,18 +550,18 @@ function fence(x0, z0, x1, z1, h) {
 (function () {
     const tex = facadeTex({ w: 11, h: 10.2, floors: 3, cols: 4, brick: '#6e4a3a', ground: 'shutter' });
     const side = M('#4f3428');
-    const m = new THREE.MeshStandardMaterial({ map: tex });
+    const m = facadeMat(tex);
     const b = mesh(new THREE.BoxGeometry(11, 10.2, 12), [side, side, M('#3b3836'), side, side, m], 33.5, 5.1, 15);
     solid(28, 39.5, 9, 21, 10.2);
     box(11.3, 0.4, 0.4, stone, 33.5, 10.3, 8.95);
     fireEscape(33.5, 9, 3, 3.6, -1);
 })();
 // 奥の建物（遠景）
-for (let x = -60; x < 60;) {
+for (let x = -60; x < 100;) {
     const w = 9 + rnd() * 7, h = 12 + rnd() * 16;
     const tex = facadeTex({ w: w, h: h, floors: Math.round(h / 3.2), cols: Math.round(w / 2.6), brick: pick(brickColors), ground: 'shutter' });
     const side = M(shade(pick(brickColors), 0.6));
-    const m = new THREE.MeshStandardMaterial({ map: tex });
+    const m = facadeMat(tex);
     mesh(new THREE.BoxGeometry(w, h, 10), [side, side, M('#3b3836'), side, side, m], x + w / 2, h / 2, 37);
     if (rnd() < 0.35) waterTower(x + w / 2, h, 37);
     x += w + 0.2;
@@ -558,15 +585,129 @@ for (let i = 0; i < 14; i++) {
     box(3.2, 2.6, 14, M('#a6acb2', { metalness: 0.5, roughness: 0.4 }), -44, 8.9, -6);   // 止まっている電車
     box(3.25, 0.5, 14.05, M('#6d2c8f'), -44, 8.4, -6);
 })();
-// 右の工事フェンス
-(function () {
-    const ply = new THREE.MeshStandardMaterial({ map: canvasTex(1024, 128, (g, w, h) => {
-        g.fillStyle = '#7d6a4f'; g.fillRect(0, 0, w, h);
-        for (let x = 0; x < w; x += 96) { g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(x, 0, 3, h); }
-        tag(g, 40, 10, 300, 108, 'BOOM'); tag(g, 520, 10, 300, 108, 'FLOW');
-    }) });
-    const p = mesh(new THREE.PlaneGeometry(40, 2.6), ply, 41, 1.3, 7);
+// 右の工事フェンス（道路のところにゲート。18歳になると開く）
+const plyTex = canvasTex(1024, 128, (g, w, h) => {
+    g.fillStyle = '#7d6a4f'; g.fillRect(0, 0, w, h);
+    for (let x = 0; x < w; x += 96) { g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(x, 0, 3, h); }
+    tag(g, 40, 10, 300, 108, 'BOOM'); tag(g, 520, 10, 300, 108, 'FLOW');
+});
+[[-13, -5.3], [5.3, 27]].forEach(([z0, z1]) => {
+    const t = plyTex.clone(); t.needsUpdate = true; t.wrapS = THREE.RepeatWrapping; t.repeat.set((z1 - z0) / 20, 1);
+    const p = mesh(new THREE.PlaneGeometry(z1 - z0, 2.6), new THREE.MeshStandardMaterial({ map: t, side: THREE.DoubleSide }), 41, 1.3, (z0 + z1) / 2);
     p.rotation.y = -Math.PI / 2;
+    solid(40.8, 41.2, z0, z1, 2.6, true);
+});
+const gate = new THREE.Group(); scene.add(gate);
+(function () {
+    const stripe = canvasTex(256, 32, (g, w, h) => {
+        for (let x = -32; x < w; x += 32) { g.fillStyle = (x / 32) % 2 ? '#f2f2f2' : '#e0461f'; g.beginPath(); g.moveTo(x, h); g.lineTo(x + 16, 0); g.lineTo(x + 32, 0); g.lineTo(x + 16, h); g.fill(); }
+    });
+    [-0.8, 0.8].forEach(dy => {
+        const bar = box(0.12, 0.28, 10.6, new THREE.MeshStandardMaterial({ map: stripe }), 41, 0.75 + dy * 0.6 + 0.6, 0, gate);
+    });
+    [-5, 0, 5].forEach(z => box(0.15, 1.9, 0.15, M('#d9d9d9'), 41, 0.95, z, gate));
+    const sign = mesh(new THREE.PlaneGeometry(3.4, 1.3), new THREE.MeshStandardMaterial({ map: canvasTex(512, 196, (g, w, h) => {
+        g.fillStyle = '#f2c230'; g.fillRect(0, 0, w, h); g.strokeStyle = '#1b1b1b'; g.lineWidth = 12; g.strokeRect(6, 6, w - 12, h - 12);
+        g.fillStyle = '#1b1b1b'; g.textAlign = 'center'; g.font = '900 54px Arial Black, Impact'; g.fillText('STAGE DISTRICT', w / 2, 80);
+        g.font = '900 56px "Hiragino Sans", sans-serif'; g.fillText('🔒 18歳から', w / 2, 158);
+    }), side: THREE.DoubleSide }), 40.85, 2.4, 0, gate);
+    sign.rotation.y = -Math.PI / 2;
+})();
+
+// ステージ地区（右側）
+const eastSpots = [];
+const crowdPlan = [];
+let billboardCtx = null, billboardTex = null;
+(function () {
+    // 北側：クラブとビル
+    const club = { x0: 43, x1: 59 };
+    const ch = 9;
+    const clubTex = canvasTex(512, 300, (g, w, h) => {
+        g.fillStyle = '#17141c'; g.fillRect(0, 0, w, h);
+        for (let i = 0; i < 400; i++) { g.fillStyle = 'rgba(255,255,255,0.03)'; g.fillRect(rnd() * w, rnd() * h, 3, 3); }
+        tag(g, 30, 160, 200, 110, 'LOUD'); tag(g, 280, 160, 200, 110, 'HYPE');
+    });
+    const dark = M('#1c1920');
+    mesh(new THREE.BoxGeometry(16, ch, 12), [dark, dark, M('#2a2a2a'), dark, new THREE.MeshStandardMaterial({ map: clubTex }), dark], 51, ch / 2, -15);
+    solid(club.x0, club.x1, -21, -9, ch);
+    // ネオン看板
+    const neon = mesh(new THREE.PlaneGeometry(10, 2.2), new THREE.MeshBasicMaterial({ map: canvasTex(512, 112, (g, w, h) => {
+        g.fillStyle = '#0c0a10'; g.fillRect(0, 0, w, h);
+        g.shadowColor = '#ff3fd0'; g.shadowBlur = 24; g.strokeStyle = '#ff7ae6'; g.lineWidth = 6;
+        g.font = '900 78px Arial Black, Impact'; g.textAlign = 'center'; g.strokeText('CLUB NOVA', w / 2, 84);
+        g.shadowColor = '#3ff2ff'; g.fillStyle = '#d9fbff'; g.font = '900 20px Arial'; g.fillText('LIVE • DJ • CYPHER', w / 2, 106);
+    }) }), 51, 6.2, -8.95);
+    neon.castShadow = false;
+    box(4, 2.6, 0.1, M('#2a0a22', { emissive: '#ff3fd0', emissiveIntensity: 0.06 }), 51, 1.3, -8.97);
+    // 入口のロープ
+    [-3, 3].forEach(dx => { mesh(new THREE.CylinderGeometry(0.05, 0.08, 0.9, 8), M('#d6b24a', { metalness: 0.7, roughness: 0.3 }), 51 + dx, 0.6, -7.8); });
+    const rope = mesh(new THREE.TorusGeometry(3, 0.04, 6, 30, Math.PI), M('#9b1b30'), 51, 1.0, -7.8); rope.rotation.z = Math.PI; rope.scale.y = 0.15;
+    // 屋上のビルボード（名前が出る）
+    const bb = document.createElement('canvas'); bb.width = 512; bb.height = 200;
+    billboardCtx = bb.getContext('2d');
+    billboardTex = new THREE.CanvasTexture(bb); billboardTex.encoding = THREE.sRGBEncoding;
+    box(0.3, 4, 0.3, metal, 47, ch + 2, -12); box(0.3, 4, 0.3, metal, 55, ch + 2, -12);
+    const board = mesh(new THREE.PlaneGeometry(10, 4), new THREE.MeshBasicMaterial({ map: billboardTex }), 51, ch + 3.6, -11.8);
+    board.castShadow = false;
+    // 右のビル
+    [[59, 68, '#5c4a6b'], [68, 79, '#8e3b2c']].forEach(([x0, x1, brick], k) => {
+        const w = x1 - x0, h = 13 + k * 4;
+        const tex = facadeTex({ w: w, h: h, floors: Math.round(h / 3.2), cols: Math.round(w / 2.6), brick: brick, ground: 'shutter' });
+        const side = M(shade(brick, 0.6));
+        mesh(new THREE.BoxGeometry(w, h, 12), [side, side, M('#3b3836'), side, facadeMat(tex), side], (x0 + x1) / 2, h / 2, -15);
+        solid(x0, x1, -21, -9, h);
+        if (k === 1) waterTower((x0 + x1) / 2, h, -15);
+    });
+
+    // 南側：野外ステージの広場
+    const plaza = mesh(new THREE.PlaneGeometry(36, 20), new THREE.MeshStandardMaterial({ map: sidewalkTex.clone(), roughness: 0.9 }), 60, 0.155, 19);
+    plaza.material.map.needsUpdate = true; plaza.material.map.repeat.set(9, 5);
+    plaza.rotation.x = -Math.PI / 2; plaza.castShadow = false;
+    // ステージ
+    const sx = 60, sz = 25;
+    box(16, 1.2, 6, M('#24212a', { roughness: 0.6 }), sx, 0.75, sz);
+    box(16.2, 0.08, 6.2, M('#3a3540', { roughness: 0.3 }), sx, 1.38, sz);
+    solid(sx - 8, sx + 8, sz - 3, sz + 3, 1.4);
+    // トラス
+    const truss = M('#b8bcc2', { metalness: 0.7, roughness: 0.3 });
+    [-7.6, 7.6].forEach(dx => box(0.35, 7, 0.35, truss, sx + dx, 4.4, sz - 2.6));
+    box(15.6, 0.35, 0.35, truss, sx, 7.8, sz - 2.6);
+    // ライト
+    const stageLights = [];
+    for (let i = 0; i < 6; i++) {
+        const c = ['#ff3fd0', '#3ff2ff', '#ffd23f', '#7cff4f', '#ff6a2b', '#a46bff'][i];
+        const lx = sx - 6 + i * 2.4;
+        const can = mesh(new THREE.CylinderGeometry(0.18, 0.25, 0.45, 10), M('#1b1b1b'), lx, 7.45, sz - 2.6);
+        const beam = new THREE.Mesh(new THREE.ConeGeometry(1.4, 6.5, 16, 1, true), new THREE.MeshBasicMaterial({ color: c, transparent: true, opacity: 0.12, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+        beam.position.set(lx, 4.1, sz - 1.6); beam.rotation.x = 0.3;
+        scene.add(beam);
+        stageLights.push({ beam: beam, phase: i });
+    }
+    // スピーカー
+    [-9.2, 9.2].forEach(dx => {
+        box(1.4, 3.4, 1.2, M('#141414'), sx + dx, 1.85, sz - 1.4);
+        [0.9, 2.3].forEach(y => { const c = mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.05, 16), M('#2c2c2c', { metalness: 0.3 }), sx + dx, y, sz - 2.03); c.rotation.x = Math.PI / 2; });
+        solid(sx + dx - 0.7, sx + dx + 0.7, sz - 2, sz - 0.8, 3.4);
+    });
+    // 背景の幕
+    const curtain = mesh(new THREE.PlaneGeometry(15, 5.8), new THREE.MeshStandardMaterial({ map: canvasTex(512, 200, (g, w, h) => {
+        const grd = g.createLinearGradient(0, 0, w, h); grd.addColorStop(0, '#2f1d5e'); grd.addColorStop(1, '#6b1f4a');
+        g.fillStyle = grd; g.fillRect(0, 0, w, h); tag(g, 40, 30, w - 80, h - 60, 'RAPPER RAISE');
+    }), emissive: '#ffffff', emissiveIntensity: 0.08 }), sx, 4.3, sz + 2.9);
+    curtain.rotation.y = Math.PI;
+    curtain.castShadow = false;
+    // マイクスタンド
+    mesh(new THREE.CylinderGeometry(0.02, 0.02, 1.5, 6), metal, sx, 2.15, sz - 1.8);
+    mesh(new THREE.SphereGeometry(0.06, 10, 8), M('#555'), sx, 2.95, sz - 1.8);
+    eastSpots.stageLights = stageLights;
+    // 観客（その場でノる）
+    const crowdColors = ['#d7263d', '#2b6cb0', '#f2c230', '#2f855a', '#6b46c1', '#dd6b20', '#1a202c', '#e2e8f0'];
+    for (let i = 0; i < 9; i++) crowdPlan.push([52 + (i % 5) * 3.6 + rnd(), 13.5 + Math.floor(i / 5) * 2.2 + rnd()]);
+    // 屋台とベンチ
+    box(3, 2.4, 1.6, M('#c9302c'), 74, 1.35, 12.5); box(3.4, 0.15, 2, M('#f2f2f2'), 74, 2.65, 12.5);
+    solid(72.5, 75.5, 11.7, 13.3, 2.5);
+    // 右の端の建物
+    box(4, 14, 22, M('#4d3a33'), 80, 7, 19);
 })();
 
 // ---------------------------------------------------------------- 小物
@@ -577,8 +718,19 @@ function streetLight(x, z, dir) {
     mesh(new THREE.CylinderGeometry(0.1, 0.32, 0.25, 10), lampMat, x, 6.0, z + dir * 1.55);
     mesh(new THREE.SphereGeometry(0.15, 10, 8), new THREE.MeshBasicMaterial({ color: '#ffdca0' }), x, 5.88, z + dir * 1.55).castShadow = false;
     solid(x - 0.15, x + 0.15, z - 0.15, z + 0.15, 6);
+    // 夜に光るぼんやりした光
+    const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: '#ffd59a', transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0 }));
+    glow.position.set(x, 5.85, z + dir * 1.55); glow.scale.set(2.6, 2.6, 1);
+    scene.add(glow);
+    lamps.push({ x: x, y: 5.6, z: z + dir * 1.55, glow: glow });
 }
-for (let x = -34; x <= 34; x += 17) { streetLight(x, -5.6, 1); streetLight(x + 8.5, 5.6, -1); }
+const lamps = [];
+const glowTex = canvasTex(64, 64, (g, w, h) => {
+    const grd = g.createRadialGradient(32, 32, 1, 32, 32, 31);
+    grd.addColorStop(0, 'rgba(255,255,255,1)'); grd.addColorStop(0.25, 'rgba(255,255,255,0.45)'); grd.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = grd; g.fillRect(0, 0, w, h);
+});
+for (let x = -34; x <= 68; x += 17) { streetLight(x, -5.6, 1); streetLight(x + 8.5, 5.6, -1); }
 
 function hydrant(x, z) {
     const red = M('#b8261f', { roughness: 0.5 });
@@ -658,7 +810,7 @@ car(-8, 3.8, '#c9b37a', Math.PI);
 car(30, 3.8, '#3c3c3e', Math.PI);
 
 // 電線
-for (let x = -34; x <= 34; x += 17) {
+for (let x = -34; x <= 68; x += 17) {
     const wire = mesh(new THREE.CylinderGeometry(0.015, 0.015, Math.hypot(8.5, 11.2), 4), M('#111111'), x + 4.25, 6.1, 0);
     wire.rotation.z = Math.PI / 2; wire.rotation.y = -Math.atan2(11.2, 8.5); wire.castShadow = false;
 }
@@ -697,6 +849,12 @@ makeNPC({ skin: '#8d5a3b', top: '#c23b3b', pants: '#2c3440', cap: '#111111' }, -
 makeNPC({ skin: '#e2b893', top: '#3a5f8f', pants: '#3b3b3b', hair: '#6b4a2b' }, 10, 7.4, -22, 36);
 makeNPC({ skin: '#5a3a28', top: '#e3c64a', pants: '#1f2a36', cap: '#7a1f9a' }, 25, -6.5, -10, 36);
 makeNPC({ skin: '#c48e6a', top: '#2f6b4a', pants: '#4a3b2c', hair: '#111111' }, -30, 6.6, -38, 4);
+// ステージ前の観客（その場でノる）
+const crowdColors = ['#d7263d', '#2b6cb0', '#f2c230', '#2f855a', '#6b46c1', '#dd6b20', '#1a202c', '#e2e8f0'];
+crowdPlan.forEach(([x, z]) => {
+    const n = makeNPC({ skin: pick(['#8d5a3b', '#e2b893', '#5a3a28', '#c48e6a', '#f1c9a5']), top: pick(crowdColors), pants: pick(['#2c3440', '#3b3b3b', '#4a3b2c']), cap: rnd() < 0.4 ? pick(crowdColors) : null, hair: '#1a1410' }, x, z, x, x);
+    n.crowd = true; n.face = Math.PI;
+});
 
 // ---------------------------------------------------------------- 遊べる場所
 // ライバル（バスケットコートの中）
@@ -753,6 +911,7 @@ const spots = [
     { id: 'dance',   x: 11.5, z: 17.8, r: 1.9, label: '🕺 ラジカセでダンス', icon: '🕺', color: '#e08a16', my: 1.9, mz: 19 },
     { id: 'rhyme',   x: 18.5, z: 19.3, r: 2.0, label: '🎤 MCと韻踏練習', icon: '🎤', color: '#5b3e8f', my: 2.75, mx: 18.5, mz: 20.6 },
 ];
+spots.push({ id: 'live', x: 60, z: 20.6, r: 2.4, label: '🎤 ステージでライブ', icon: '🎤', color: '#c2187a', my: 4.2, mz: 23.5, east: true });
 spots.forEach(s => { if (s.icon) s.marker = marker(s.icon, s.color, s.mx != null ? s.mx : s.x, s.my, s.mz != null ? s.mz : s.z); });
 
 // ---------------------------------------------------------------- プレイヤー
@@ -1145,6 +1304,7 @@ window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 function resolve(x, z, r) {
     for (let it = 0; it < 2; it++) {
         for (const c of colliders) {
+            if (c.off) continue;
             const cx = Math.max(c.x0, Math.min(x, c.x1)), cz = Math.max(c.z0, Math.min(z, c.z1));
             const dx = x - cx, dz = z - cz, d2 = dx * dx + dz * dz;
             if (d2 < r * r) {
@@ -1162,7 +1322,10 @@ function resolve(x, z, r) {
     z = Math.max(BOUNDS.z0, Math.min(BOUNDS.z1, z));
     return [x, z];
 }
-function groundY(x, z) { return Math.abs(z) < 5 ? 0 : 0.15; }
+function groundY(x, z) {
+    if (busy && busy.live) return 1.42;
+    return Math.abs(z) < 5 ? 0 : 0.15;
+}
 
 // ---------------------------------------------------------------- 家に入るボタン
 const actionBtn = document.getElementById('action');
@@ -1170,6 +1333,7 @@ let nearHome = false;
 let currentSpot = null;
 actionBtn.addEventListener('click', () => {
     if (!currentSpot || busy) return;
+    if (currentSpot.id === 'talk') { talkTo(currentSpot.npc); return; }
     post({ type: currentSpot.id === 'home' ? 'home' : 'spot', id: currentSpot.id });
 });
 // 筋トレ・ダンス中は動けない
@@ -1178,8 +1342,108 @@ function post(obj) {
     try { window.webkit.messageHandlers.city.postMessage(JSON.stringify(obj)); } catch (e) { console.log('post', obj); }
 }
 
+// ---------------------------------------------------------------- プロフィール（名前・年齢・人気）
+const profile = { name: 'キミ', age: 20, fame: 0, hour: new Date().getHours() };
+let eastOpen = false;
+let liveUntil = 0;
+function applyProfile() {
+    eastOpen = profile.age >= 18;
+    gate.visible = !eastOpen;
+    BOUNDS.x1 = eastOpen ? EAST_X1 : 39;
+    colliders.forEach(c => { if (c.gate) c.off = eastOpen; });
+    // ビルボード
+    const g = billboardCtx, w = 512, h = 200;
+    const grd = g.createLinearGradient(0, 0, w, h); grd.addColorStop(0, '#111018'); grd.addColorStop(1, '#2a1240');
+    g.fillStyle = grd; g.fillRect(0, 0, w, h);
+    g.textAlign = 'center';
+    if (profile.fame >= 30) {
+        g.fillStyle = '#ffd23f'; g.font = '900 34px Arial Black, Impact'; g.fillText('TONIGHT LIVE', w / 2, 56);
+        g.fillStyle = '#ffffff'; g.font = '900 64px "Hiragino Sans", sans-serif'; g.fillText(profile.name, w / 2, 140);
+        g.fillStyle = '#ff7ae6'; g.font = 'bold 22px Arial'; g.fillText('★ この街のスター ★', w / 2, 182);
+    } else {
+        g.fillStyle = '#ffffff'; g.font = '900 44px Arial Black, Impact'; g.fillText('OPEN MIC', w / 2, 80);
+        g.fillStyle = '#3ff2ff'; g.font = 'bold 26px "Hiragino Sans", sans-serif'; g.fillText('ステージで名前を売ろう', w / 2, 130);
+        g.fillStyle = '#ffd23f'; g.font = 'bold 20px Arial'; g.fillText('人気30でここに名前が出る', w / 2, 170);
+    }
+    billboardTex.needsUpdate = true;
+}
+// ゲートの当たり判定
+solid(40.8, 41.2, -5.3, 5.3, 2.6, true);
+colliders[colliders.length - 1].gate = true;
+
+// ---------------------------------------------------------------- 街の人のセリフ
+const bubble = document.getElementById('bubble');
+let bubbleNPC = null, bubbleUntil = 0;
+function talkLine() {
+    const n = profile.name, night = timeMode === 'night';
+    let pool;
+    if (profile.age < 13) pool = ['ぼうや、ひとりで来たのか？', '大きくなったら、あのステージに立てるかもな', 'バスケコートのやつ、口は悪いけど根はいいやつだぞ', 'デリのおばちゃん、子どもにはオマケしてくれるぜ'];
+    else if (profile.fame >= 30) pool = [`あ！${n}だ！サインちょうだい！`, 'ファンです！次のライブいつ？', `${n}さん、この前のステージ最高だった！`, 'この街のスターじゃん！写真いい？'];
+    else if (profile.fame >= 10) pool = ['あれ、サイファーで見たことあるかも', `${n}って名前、聞いたことあるぞ`, '最近がんばってるらしいじゃん', 'BEAT LABの人がキミのこと話してたよ'];
+    else pool = ['よう、見ない顔だな', 'この辺はバスケコートのサイファーが熱いぜ', 'デリのサンドイッチ、うまいよ', 'BEAT LABで練習してるやつ、上手かったな', '壁画の前のMCに韻を教わるといいぞ', '鉄棒で鍛えてるやつ、最近増えたよな'];
+    if (night) pool = pool.concat(['夜の街は気をつけて帰りなよ', 'こんな時間までラップの練習か？', '夜のネオン、きれいだろ']);
+    if (eastOpen) pool = pool.concat(['ゲートの向こうのステージ、今夜も盛り上がってるらしい']);
+    else if (profile.age >= 13) pool = pool.concat(['工事のゲートの先は、18歳になったら行けるぜ']);
+    return pick(pool);
+}
+function talkTo(n) {
+    n.pause = 3.2; n.talking = true;
+    showBubble(n, talkLine());
+    if (!n.talked) { n.talked = true; post({ type: 'talk' }); }
+}
+function showBubble(n, text) {
+    bubble.textContent = text;
+    bubble.classList.add('show');
+    bubbleNPC = n; bubbleUntil = performance.now() + 3200;
+}
+function updateBubble() {
+    if (!bubbleNPC) return;
+    if (performance.now() > bubbleUntil) { bubble.classList.remove('show'); bubbleNPC = null; return; }
+    const p = new THREE.Vector3(bubbleNPC.g.position.x, bubbleNPC.g.position.y + 2.1, bubbleNPC.g.position.z).project(camera);
+    bubble.style.left = ((p.x * 0.5 + 0.5) * window.innerWidth) + 'px';
+    bubble.style.top = ((-p.y * 0.5 + 0.5) * window.innerHeight) + 'px';
+}
+
+// ---------------------------------------------------------------- 昼と夜
+let timeMode = 'day';
+const pointPool = [];
+for (let i = 0; i < 4; i++) { const l = new THREE.PointLight('#ffcf8a', 0, 13, 2); scene.add(l); pointPool.push(l); }
+const moon = mesh(new THREE.SphereGeometry(4, 20, 14), new THREE.MeshBasicMaterial({ color: '#f4f1e2' }), 40, 70, -140);
+moon.castShadow = false;
+function setTime(mode) {
+    timeMode = mode;
+    const P = {
+        day:    { sky: '#c3cbd2', hemi: ['#e4ecf3', '#5b4b3f', 0.8], sun: ['#ffe6c2', 1.15], off: [16, 32, 14], exp: 1.05, glow: 0,   win: 0,   pt: 0 },
+        sunset: { sky: '#e9a77f', hemi: ['#ffd9bd', '#4b3a35', 0.6], sun: ['#ff9a5a', 1.0],  off: [40, 12, 12], exp: 1.0,  glow: 0.5, win: 0.7, pt: 0.6 },
+        night:  { sky: '#0b1120', hemi: ['#6f82b8', '#1c1a22', 0.2], sun: ['#9fb4ff', 0.18], off: [-14, 30, 10], exp: 1.0, glow: 1,   win: 1.1, pt: 1.6 }
+    }[mode];
+    scene.background = new THREE.Color(P.sky);
+    scene.fog.color = new THREE.Color(P.sky);
+    hemi.color.set(P.hemi[0]); hemi.groundColor.set(P.hemi[1]); hemi.intensity = P.hemi[2];
+    sun.color.set(P.sun[0]); sun.intensity = P.sun[1];
+    sunOffset.set(P.off[0], P.off[1], P.off[2]);
+    renderer.toneMappingExposure = P.exp;
+    lamps.forEach(l => { l.glow.material.opacity = P.glow; });
+    facadeMats.forEach(m => { m.emissiveIntensity = P.win; });
+    pointPool.forEach(l => { l.userData.on = P.pt; });
+    moon.visible = mode === 'night';
+    if (eastSpots.stageLights) eastSpots.stageLights.forEach(s => { s.beam.material.opacity = mode === 'day' ? 0.04 : 0.09; });
+}
+function timeForHour(h) { return h >= 6 && h < 16 ? 'day' : (h >= 16 && h < 19 ? 'sunset' : 'night'); }
+function updateLampLights() {
+    const sorted = lamps.map(l => ({ l: l, d: (l.x - player.x) ** 2 + (l.z - player.z) ** 2 })).sort((a, b) => a.d - b.d);
+    pointPool.forEach((p, i) => {
+        const l = sorted[i] && sorted[i].l;
+        if (!l) return;
+        p.position.set(l.x, l.y, l.z);
+        p.intensity = p.userData.on || 0;
+    });
+}
+let lampTimer = 0;
+
 // ---------------------------------------------------------------- メインループ
 const clock = new THREE.Clock();
+let gateWarned = false;
 function loop() {
     requestAnimationFrame(loop);
     const dt = Math.min(clock.getDelta(), 0.05);
@@ -1233,6 +1497,7 @@ function loop() {
         const now = performance.now();
         const bt = (now - busy.start) / 1000;
         if (now > busy.until || !L.leftLegPivot) {
+            if (busy.live) { player.x = 60; player.z = 20.6; }
             busy = null;
         } else if (busy.type === 'workout') {
             // 鉄棒にぶら下がって懸垂
@@ -1261,20 +1526,26 @@ function loop() {
         if (n.still) {
             // その場で体をゆらす（プレイヤーが近いと向く）
             const dx = player.x - n.g.position.x, dz = player.z - n.g.position.z;
-            const want = Math.hypot(dx, dz) < 8 ? Math.atan2(dx, dz) : n.face;
+            const want = (!n.crowd && Math.hypot(dx, dz) < 8) ? Math.atan2(dx, dz) : n.face;
             let df = want - n.g.rotation.y;
             while (df > Math.PI) df -= Math.PI * 2;
             while (df < -Math.PI) df += Math.PI * 2;
             n.g.rotation.y += df * Math.min(1, dt * 4);
-            n.phase += dt * 4.6;
-            n.g.position.y = 0.15 + Math.abs(Math.sin(n.phase)) * 0.05;
+            n.phase += dt * (n.crowd ? 6 : 4.6);
+            n.g.position.y = 0.15 + Math.abs(Math.sin(n.phase)) * (n.crowd ? (liveUntil > performance.now() ? 0.25 : 0.06) : 0.05);
+            if (n.crowd && liveUntil > performance.now()) { n.arms[0].rotation.x = -2.8 + Math.sin(n.phase) * 0.3; n.arms[1].rotation.x = -2.8 - Math.sin(n.phase) * 0.3; return; }
             n.arms[0].rotation.x = -0.4 + Math.sin(n.phase) * 0.25;
             n.arms[1].rotation.x = -0.9 + Math.sin(n.phase * 2) * 0.35;
             const d = Math.hypot(dx, dz);
             if (d < 0.6 && d > 0.001) { player.x = n.g.position.x + dx / d * 0.6; player.z = n.g.position.z + dz / d * 0.6; }
             return;
         }
-        if (n.pause > 0) { n.pause -= dt; n.legs.forEach(l => l.rotation.x *= 0.9); return; }
+        if (n.pause > 0) {
+            n.pause -= dt; n.legs.forEach(l => l.rotation.x *= 0.9);
+            if (n.talking) { n.g.rotation.y = Math.atan2(player.x - n.g.position.x, player.z - n.g.position.z); }
+            return;
+        }
+        n.talking = false;
         n.g.position.x += n.dir * n.speed * dt;
         if (n.g.position.x > n.x1) { n.dir = -1; n.pause = 1 + rnd() * 2; }
         if (n.g.position.x < n.x0) { n.dir = 1; n.pause = 1 + rnd() * 2; }
@@ -1308,13 +1579,20 @@ function loop() {
         homeDoor.arrow.rotation.y += dt * 1.5;
     }
     let best = null, bestD = 1e9;
+    // 歩いている人に話しかける
+    npcs.forEach(n => {
+        if (n.still) return;
+        const d = Math.hypot(player.x - n.g.position.x, player.z - n.g.position.z);
+        if (d < 1.9 && d < bestD) { best = { id: 'talk', npc: n, label: '💬 話しかける' }; bestD = d; }
+    });
     spots.forEach(s => {
+        if (s.east && !eastOpen) return;
         const d = Math.hypot(player.x - s.x, player.z - s.z);
         if (d < s.r && d < bestD) { best = s; bestD = d; }
-        if (s.marker) s.marker.position.y = s.marker.userData.baseY + Math.sin(t * 2.5 + s.x) * 0.12;
+        if (s.marker) { s.marker.position.y = s.marker.userData.baseY + Math.sin(t * 2.5 + s.x) * 0.12; s.marker.visible = !busy && (!s.east || eastOpen); }
     });
     if (busy) best = null;
-    if (best !== currentSpot) {
+    if (best !== currentSpot && !(best && currentSpot && best.npc && best.npc === currentSpot.npc)) {
         currentSpot = best;
         nearHome = !!best && best.id === 'home';
         if (best) actionBtn.textContent = best.label;
@@ -1322,11 +1600,24 @@ function loop() {
     }
 
     // 影をプレイヤーのまわりに
-    sun.position.set(player.x + 16, 32, player.z + 14);
+    sun.position.set(player.x + sunOffset.x, sunOffset.y, player.z + sunOffset.z);
     sun.target.position.set(player.x, 0, player.z);
+
+    // ステージのライト
+    if (eastSpots.stageLights) eastSpots.stageLights.forEach(s => {
+        s.beam.rotation.z = Math.sin(t * 1.3 + s.phase) * 0.35;
+        s.beam.rotation.x = 0.3 + Math.cos(t * 1.1 + s.phase) * 0.15;
+    });
+    // ゲートに近づいたとき（まだ開いていない）
+    if (!eastOpen && player.x > 37.5 && Math.abs(player.z) < 5.5) {
+        if (!gateWarned) { gateWarned = true; window.city.toast('🔒 ステージ地区は18歳から'); }
+    } else if (player.x < 35) gateWarned = false;
+    lampTimer -= dt;
+    if (lampTimer <= 0) { lampTimer = 0.4; updateLampLights(); }
 
     updateCamera(dt);
     renderer.render(scene, camera);
+    updateBubble();
 }
 
 window.addEventListener('resize', () => {
@@ -1346,6 +1637,20 @@ window.city = {
         }
         busy = { type: type, start: now, until: now + (seconds || 4) * 1000 };
     },
+    setProfile(p) {
+        Object.assign(profile, p || {});
+        applyProfile();
+        setTime(timeForHour(profile.hour));
+    },
+    setTime(mode) { setTime(mode); },
+    // ステージでライブ
+    live() {
+        const now = performance.now();
+        player.x = 60; player.z = 24; player.y = 1.42; player.rot = Math.PI;
+        cam.yaw = Math.PI; cam.pitch = 0.25; cam.dist = 11;
+        busy = { type: 'dance', start: now, until: now + 5000, live: true };
+        liveUntil = now + 5000;
+    },
     toast(text) {
         const el = document.getElementById('toast');
         el.textContent = text; el.classList.add('show');
@@ -1357,12 +1662,14 @@ window.city = {
         avatarRig.scale.setScalar(currentScale);
     },
     // テスト用
-    debug() { return { spot: currentSpot && currentSpot.id, busy: !!busy, camD: camera.position.distanceTo(cam.target), x: player.x, z: player.z, near: nearHome, colliders: colliders.length, calls: renderer.info.render.calls }; },
+    debug() { return { east: eastOpen, time: timeMode, spot: currentSpot && currentSpot.id, busy: !!busy, camD: camera.position.distanceTo(cam.target), x: player.x, z: player.z, near: nearHome, colliders: colliders.length, calls: renderer.info.render.calls }; },
     teleport(x, z) { player.x = x; player.z = z; },
     setCam(d, p, y) { cam.dist = d; cam.pitch = p; cam.yaw = y; }
 };
 buildHuman({ stage: 'adult', skin: '#c68642', hairStyle: 'short', hairColor: '#1e1a18', top: 'hoodie', topColor: '#d7263d', build: 'normal', eyes: 'normal', brows: 'normal', mouth: 'smile', beard: 'none', hat: 'none', hatColor: '#111111', glasses: 'none', chain: 'none', earring: false, scale: 1 });
 
+applyProfile();
+setTime(timeForHour(profile.hour));
 cam.target.set(player.x, player.y + 1.35, player.z);
 loop();
 setTimeout(() => document.getElementById('place').classList.add('hide'), 3500);

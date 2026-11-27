@@ -37,12 +37,17 @@ struct CityView: View {
             let close = dismiss
             controller.onHome = { close() }
             controller.onSpot = { id in openSpot(id) }
+            controller.onTalk = { game.rewardTalk() }
             sendLook()
+            sendProfile()
         }
         // 「成長+2」などのお知らせを街の画面に出す
         .onChange(of: game.message) { _, new in
             controller.run("city.toast(\(CityController.json(new)))")
         }
+        // 人気や年齢が変わったら、ビルボードやゲートに反映する
+        .onChange(of: game.data.stats.fame) { _, _ in sendProfile() }
+        .onChange(of: game.age) { _, _ in sendProfile() }
         .sheet(isPresented: $showFood) { FoodView().environmentObject(game) }
         .sheet(isPresented: $showCloset, onDismiss: sendLook) { ClosetView().environmentObject(game) }
         .sheet(isPresented: $showRhyme) { RhymeGameView().environmentObject(game) }
@@ -52,6 +57,19 @@ struct CityView: View {
 
     private func sendLook() {
         controller.run("city.setLook(\(Room3DView.lookJSON(game.data.appearance, stage: game.stage)))")
+    }
+
+    private struct Profile: Encodable {
+        let name: String
+        let age: Int
+        let fame: Int
+        let hour: Int
+    }
+
+    private func sendProfile() {
+        let p = Profile(name: game.data.name, age: game.age, fame: game.data.stats.fame,
+                        hour: Calendar.current.component(.hour, from: .now))
+        controller.run("city.setProfile(\(CityController.json(p)))")
     }
 
     /// 街のアイコンのところでボタンが押された
@@ -66,6 +84,10 @@ struct CityView: View {
                 controller.run("city.toast(\(CityController.json("サイファーは3歳になってから！")))")
             } else {
                 showCypher = true
+            }
+        case "live":
+            if game.performLive() {
+                controller.run("city.live()")
             }
         case "workout", "dance":
             let before = game.data.growth
@@ -108,6 +130,7 @@ final class CityController: NSObject, ObservableObject, WKNavigationDelegate, WK
     private var queue: [String] = []
     var onHome: (() -> Void)?
     var onSpot: ((String) -> Void)?
+    var onTalk: (() -> Void)?
 
     private struct Message: Decodable {
         let type: String
@@ -137,6 +160,7 @@ final class CityController: NSObject, ObservableObject, WKNavigationDelegate, WK
         switch msg.type {
         case "home": onHome?()
         case "spot": if let id = msg.id { onSpot?(id) }
+        case "talk": onTalk?()
         default: break
         }
     }
