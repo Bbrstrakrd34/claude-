@@ -102,9 +102,13 @@
         }
         .no-scrollbar::-webkit-scrollbar { display: none; }
         .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        /* アプリ内では最初から、上のボタン類・チャット欄・アクション欄を出さない */
+        body.app-mode header, body.app-mode #debugPanel, body.app-mode #normalBottomBar,
+        body.app-mode #actionMenu, body.app-mode #editControls, body.app-mode footer { display: none !important; }
+        .hidden { display: none !important; }
     </style>
 </head>
-<body class="w-screen h-screen relative overflow-hidden">
+<body class="app-mode w-screen h-screen relative overflow-hidden">
 
     <!-- WebGL 3D レンダリングキャンバス -->
     <div id="canvasContainer" class="absolute inset-0 w-full h-full cursor-grab active:cursor-grabbing"></div>
@@ -1949,8 +1953,9 @@ window.addEventListener('resize', () => {
 // 起動
 window.onload = function () {
     initDefaultLoftRoom();
-    applyLightingPreset('sunset');
-    showSpeechBubble('ニューヨークのロフト部屋へようこそ！右ドラッグでカメラ回転もできるよ🌆');
+    applyLightingPreset('morning');
+    // アプリ用の明るい部屋にすぐ切り替える（あいさつの吹き出しは出さない）
+    if (window.app) window.app.setCompact(true);
     animate();
 };
 </script>

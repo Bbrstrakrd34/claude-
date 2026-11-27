@@ -68,19 +68,105 @@ function playAlertSE() {
 function playWipeSE() {
     [330, 392, 494, 587, 659, 784, 988, 1175].forEach((n, i) => playTone(n, 0.08, 'square', 0.07, i * 0.065));
 }
+// ---- バトルBGM（オリジナル曲・ゲームボーイ風の音） ----
+const BGM_BPM = 168;
+const STEP = 60 / BGM_BPM / 2;          // 8分音符1つの長さ
+const NOTE = { 'G#4':415.30,'A4':440,'B4':493.88,'C5':523.25,'D5':587.33,'E5':659.25,'F5':698.46,'G5':783.99,
+               'G#5':830.61,'A5':880,'B5':987.77,'C6':1046.5 };
+// 8分音符ごとのメロディ（'-' はのばす、'.' は休み）
+const LEAD = [
+    'E5','.','E5','D5','E5','-','A5','-',    'G5','F5','E5','D5','C5','-','D5','E5',
+    'D5','.','D5','C5','D5','-','G5','-',    'F5','E5','D5','C5','B4','-','G#4','B4',
+    'A5','-','G#5','A5','B5','-','C6','-',   'A5','-','F5','-','C5','-','F5','-',
+    'B5','-','A5','B5','G5','-','D5','G5',   'E5','F5','G#5','A5','B5','C6','B5','G#5'
+];
+// 1小節ごとのベースの音（A・F・G・E のくり返し）
+const BASS_ROOTS = [110, 87.31, 98, 82.41];
+let pulseWave = null, bgmTimer = null, bgmNext = 0, bgmStep = 0, bgmGain = null, noiseBuf = null;
+
+function bgmSetup() {
+    if (!audioCtx) return false;
+    if (!pulseWave) {
+        // 25%パルス波（ゲームボーイっぽい細い音）
+        const n = 32, real = new Float32Array(n), imag = new Float32Array(n);
+        for (let k = 1; k < n; k++) imag[k] = (2 / (k * Math.PI)) * Math.sin(k * Math.PI * 0.25);
+        pulseWave = audioCtx.createPeriodicWave(real, imag);
+    }
+    if (!noiseBuf) {
+        noiseBuf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.2, audioCtx.sampleRate);
+        const d = noiseBuf.getChannelData(0);
+        for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    bgmGain = audioCtx.createGain();
+    bgmGain.gain.value = 0.55;
+    bgmGain.connect(audioCtx.destination);
+    return true;
+}
+function bgmVoice(freq, t, dur, vol, wave) {
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    if (wave === 'pulse') o.setPeriodicWave(pulseWave); else o.type = wave;
+    o.frequency.setValueAtTime(freq, t);
+    g.gain.setValueAtTime(vol, t);
+    g.gain.setValueAtTime(vol, t + dur * 0.8);
+    g.gain.linearRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(bgmGain);
+    o.start(t); o.stop(t + dur + 0.02);
+}
+function bgmNoise(t, dur, vol, hp) {
+    const src = audioCtx.createBufferSource(), f = audioCtx.createBiquadFilter(), g = audioCtx.createGain();
+    src.buffer = noiseBuf;
+    f.type = 'highpass'; f.frequency.value = hp;
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    src.connect(f); f.connect(g); g.connect(bgmGain);
+    src.start(t); src.stop(t + dur);
+}
+function bgmSchedule(i, t) {
+    const bar = Math.floor(i / 8) % 4, beat = i % 8;
+    // メロディ
+    const n = LEAD[i % LEAD.length];
+    if (n !== '-' && n !== '.') {
+        let len = 1;
+        while (LEAD[(i + len) % LEAD.length] === '-' && len < 4) len++;
+        bgmVoice(NOTE[n], t, STEP * len * 0.95, 0.07, 'pulse');
+        bgmVoice(NOTE[n] / 2, t, STEP * len * 0.9, 0.025, 'square');  // 下のハモり
+    }
+    // ベース（オクターブで跳ねる）
+    const root = BASS_ROOTS[bar];
+    bgmVoice(beat % 2 === 0 ? root : root * 2, t, STEP * 0.9, 0.16, 'triangle');
+    // アルペジオ（16分で細かく）
+    const arp = [1, 1.5, 2, 1.5][beat % 4];
+    bgmVoice(root * 4 * arp, t, STEP * 0.4, 0.018, 'square');
+    bgmVoice(root * 4 * arp * 1.25, t + STEP / 2, STEP * 0.4, 0.014, 'square');
+    // ドラム
+    if (beat % 4 === 0) bgmVoice(60, t, 0.09, 0.22, 'sine');
+    if (beat % 4 === 2) bgmNoise(t, 0.12, 0.16, 1200);
+    bgmNoise(t + STEP / 2, 0.03, 0.05, 6000);
+}
 function startBeat() {
     stopBeat();
-    let step = 0;
-    const bass = [110, 110, 130.8, 146.8, 110, 110, 164.8, 146.8];
-    beatTimer = setInterval(() => {
+    initAudio();
+    if (!audioCtx || !bgmSetup()) return;
+    bgmStep = 0;
+    bgmNext = audioCtx.currentTime + 0.1;
+    bgmTimer = setInterval(() => {
         if (!soundEnabled) return;
-        if (step % 2 === 0) playTone(75, 0.09, 'triangle', 0.14);
-        else playTone(220, 0.05, 'sawtooth', 0.05);
-        playTone(bass[step % bass.length], 0.16, 'square', 0.045);
-        step++;
-    }, 240);
+        while (bgmNext < audioCtx.currentTime + 0.25) {
+            bgmSchedule(bgmStep, bgmNext);
+            bgmNext += STEP;
+            bgmStep++;
+        }
+    }, 40);
 }
-function stopBeat() { if (beatTimer) { clearInterval(beatTimer); beatTimer = null; } }
+function stopBeat() {
+    if (bgmTimer) { clearInterval(bgmTimer); bgmTimer = null; }
+    if (bgmGain && audioCtx) {
+        const g = bgmGain;
+        g.gain.setTargetAtTime(0, audioCtx.currentTime, 0.05);
+        setTimeout(() => { try { g.disconnect(); } catch (e) {} }, 400);
+        bgmGain = null;
+    }
+}
 canvas.addEventListener('touchstart', initAudio, { passive: true });
 canvas.addEventListener('mousedown', initAudio);
 
@@ -119,6 +205,7 @@ window.battle = {
     start(config) {
         Object.assign(game.player, config.player || {});
         Object.assign(game.rival, config.rival || {});
+        initAudio();
         stopBeat();
         game.phase = 'street_walk';
         game.timer = 0;

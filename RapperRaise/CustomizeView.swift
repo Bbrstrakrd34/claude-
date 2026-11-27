@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - キャラ作成画面
 
@@ -9,9 +10,10 @@ struct CreateView: View {
     @State private var previewAdult = false
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 18) {
-                Text("赤ちゃんが生まれた！").font(.title.bold())
+        VStack(spacing: 0) {
+            // 上：キャラはいつもここに見えている
+            VStack(spacing: 10) {
+                Text("赤ちゃんが生まれた！").font(.title2.bold())
                 if Room3DView.isAvailable {
                     Picker("プレビュー", selection: $previewAdult) {
                         Text("いま（赤ちゃん）").tag(false)
@@ -19,38 +21,40 @@ struct CreateView: View {
                     }
                     .pickerStyle(.segmented)
                     Room3DView(lookOverride: look, stageOverride: previewAdult ? .star : .baby, portrait: true)
-                        .frame(height: 320)
                         .clipShape(RoundedRectangle(cornerRadius: 20))
                 } else {
                     HStack(alignment: .bottom, spacing: 8) {
-                        VStack {
-                            AvatarView(look: look, stage: .baby, size: 130)
-                            Text("いま").font(.caption)
-                        }
+                        AvatarView(look: look, stage: .baby, size: 110)
                         Image(systemName: "arrow.right").foregroundStyle(.secondary)
-                        VStack {
-                            AvatarView(look: look, stage: .star, size: 130)
-                            Text("大人になると…").font(.caption)
-                        }
+                        AvatarView(look: look, stage: .star, size: 110)
                     }
                 }
-                TextField("名前をつけてね", text: $name)
-                    .textFieldStyle(.roundedBorder)
-                AppearanceEditor(look: $look)
-                Button("育てはじめる") {
-                    var d = game.data
-                    d.name = name
-                    d.appearance = look
-                    d.created = true
-                    game.data = d
-                    game.talk("おぎゃー！")
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .disabled(name.isEmpty)
             }
-            .padding()
+            .padding(.horizontal)
+            .padding(.top, 8)
+            .frame(height: 340)
+
+            // 下：ボトムシートの中だけスクロールする
+            BottomSheetPanel {
+                VStack(spacing: 18) {
+                    TextField("名前をつけてね", text: $name)
+                        .textFieldStyle(.roundedBorder)
+                    AppearanceEditor(look: $look)
+                    Button("育てはじめる") {
+                        var d = game.data
+                        d.name = name
+                        d.appearance = look
+                        d.created = true
+                        game.data = d
+                        game.talk("おぎゃー！")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(name.isEmpty)
+                }
+            }
         }
+        .background(Color(.systemGroupedBackground).ignoresSafeArea())
     }
 }
 
@@ -63,19 +67,26 @@ struct ClosetView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 16) {
+            VStack(spacing: 0) {
+                // 上：キャラはスクロールしても動かない
+                Group {
                     if Room3DView.isAvailable {
                         Room3DView(lookOverride: draft, portrait: true)
-                            .frame(height: 320)
                             .clipShape(RoundedRectangle(cornerRadius: 20))
                     } else {
                         AvatarView(look: draft, stage: game.stage, size: 200)
                     }
+                }
+                .padding(.horizontal)
+                .padding(.top, 4)
+                .frame(height: 300)
+
+                // 下：ボトムシートの中だけスクロールする
+                BottomSheetPanel {
                     AppearanceEditor(look: $draft)
                 }
-                .padding()
             }
+            .background(Color(.systemGroupedBackground).ignoresSafeArea())
             .navigationTitle("着せ替え")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -91,6 +102,36 @@ struct ClosetView: View {
             }
         }
         .onAppear { draft = game.data.appearance }
+    }
+}
+
+// MARK: - ボトムシート風の入れ物（中身だけスクロールする）
+
+struct BottomSheetPanel<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Capsule()
+                .fill(Color.secondary.opacity(0.4))
+                .frame(width: 40, height: 5)
+                .padding(.top, 8)
+                .padding(.bottom, 4)
+            ScrollView {
+                content
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+                    .padding(.bottom, 40)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(
+            UnevenRoundedRectangle(topLeadingRadius: 24, topTrailingRadius: 24)
+                .fill(Color(.systemBackground))
+                .shadow(color: .black.opacity(0.12), radius: 10, y: -3)
+                .ignoresSafeArea(edges: .bottom)
+        )
+        .padding(.top, 10)
     }
 }
 
