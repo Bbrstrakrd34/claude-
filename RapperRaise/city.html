@@ -17,22 +17,28 @@
         background: rgba(255,255,255,0.92); box-shadow: 0 3px 10px rgba(0,0,0,0.35); pointer-events: none; }
     #action { position: fixed; right: 24px; bottom: calc(60px + env(safe-area-inset-bottom)); z-index: 5;
         padding: 16px 24px; border-radius: 999px; border: 3px solid #fff; background: #ffb020; color: #1a1a1a;
-        font-size: 18px; font-weight: 900; box-shadow: 0 6px 18px rgba(0,0,0,0.35);
+        font-size: 17px; font-weight: 900; white-space: nowrap; box-shadow: 0 6px 18px rgba(0,0,0,0.35);
         transform: scale(0.6); opacity: 0; pointer-events: none; transition: all .2s; }
     #action.show { transform: scale(1); opacity: 1; pointer-events: auto; }
+    #place small { line-height: 1.5; }
     #place { position: fixed; left: 50%; top: calc(76px + env(safe-area-inset-top)); transform: translateX(-50%);
         z-index: 4; padding: 10px 18px; border-radius: 14px; background: rgba(15,15,18,0.72); color: #fff;
         text-align: center; transition: opacity .8s; pointer-events: none; white-space: nowrap; }
     #place b { display: block; font-size: 18px; letter-spacing: 1px; }
     #place small { font-size: 11px; opacity: .8; }
     #place.hide { opacity: 0; }
+    #toast { position: fixed; left: 50%; bottom: calc(190px + env(safe-area-inset-bottom)); transform: translateX(-50%) translateY(10px);
+        z-index: 6; padding: 10px 18px; border-radius: 999px; background: rgba(15,15,18,0.8); color: #fff; font-weight: 800;
+        font-size: 15px; opacity: 0; transition: all .25s; pointer-events: none; white-space: nowrap; }
+    #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 </style>
 </head>
 <body>
 <div id="c"></div>
-<div id="place"><b>📍 マッドブリック通り</b><small>左下のスティックで歩く（大きく倒すと走る）・画面をドラッグで見回す</small></div>
+<div id="place"><b>📍 マッドブリック通り</b><small>左下のスティックで歩く・画面をドラッグで見回す<br>アイコンのところに行くと遊べる</small></div>
 <div id="stick"><div id="knob"></div></div>
 <button id="action">🏠 家に入る</button>
+<div id="toast"></div>
 <script>
 /**
  * @license
@@ -308,6 +314,7 @@ function waterTower(x, y, z) {
     [-0.6, 0.3, 1.1].forEach(dy => mesh(new THREE.TorusGeometry(1.31, 0.03, 4, 24), metal, x, y + 2.6 + dy, z).rotation.x = Math.PI / 2);
 }
 
+const shopFronts = [], studioFronts = [];
 let bx = -40;
 widths.forEach((w, i) => {
     const floors = i === HOME_INDEX ? 5 : 3 + Math.floor(rnd() * 3);
@@ -315,7 +322,7 @@ widths.forEach((w, i) => {
     const brick = brickColors[i % brickColors.length];
     const cx = bx + w / 2, front = -9, depth = 12;
     const cols = Math.max(3, Math.round(w / 2.6));
-    const tex = facadeTex({ w: w, h: h, floors: floors, cols: cols, brick: brick, ground: i === HOME_INDEX ? 'door' : 'shutter' });
+    const tex = facadeTex({ w: w, h: h, floors: floors, cols: cols, brick: brick, ground: (i === HOME_INDEX || i === 3 || i === 5) ? 'door' : 'shutter' });
     const side = new THREE.MeshStandardMaterial({ color: shade(brick, 0.7), roughness: 0.95 });
     const frontMat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.9 });
     const b = mesh(new THREE.BoxGeometry(w - 0.05, h, depth), [side, side, M('#3b3836'), side, frontMat, side], cx, h / 2, front - depth / 2);
@@ -323,7 +330,7 @@ widths.forEach((w, i) => {
     // 屋上のふち
     box(w + 0.3, 0.5, 0.5, stone, cx, h + 0.1, front + 0.05);
     box(w + 0.1, 0.25, 0.35, stone, cx, 3.25, front + 0.1);
-    if (i !== HOME_INDEX && rnd() < 0.85) fireEscape(cx + (rnd() < 0.5 ? -1 : 1) * w * 0.18, front, floors, Math.min(4.2, w * 0.38));
+    if (i !== HOME_INDEX && i !== 3 && i !== 5 && rnd() < 0.85) fireEscape(cx + (rnd() < 0.5 ? -1 : 1) * w * 0.18, front, floors, Math.min(4.2, w * 0.38));
     if (rnd() < 0.5 || i === 1 || i === 5) waterTower(cx + (rnd() - 0.5) * w * 0.4, h, front - depth * 0.5);
     if (i === HOME_INDEX) {
         // 自分の家：階段つきの玄関
@@ -350,6 +357,32 @@ widths.forEach((w, i) => {
         arrow.rotation.x = Math.PI;
         arrow.castShadow = false;
         homeDoor.arrow = arrow;
+    } else if (i === 3 || i === 5) {
+        // 服屋（THREADS）とスタジオ（BEAT LAB）
+        const isShop = i === 3;
+        const glowColor = isShop ? '#fff1c9' : '#ff4a6a';
+        const win = mesh(new THREE.PlaneGeometry(w * 0.55, 2.3), new THREE.MeshStandardMaterial({ color: glowColor, emissive: glowColor, emissiveIntensity: isShop ? 0.55 : 0.45, roughness: 0.2 }), cx - w * 0.12, 1.55, front + 0.03);
+        win.castShadow = false;
+        box(w * 0.55 + 0.2, 0.12, 0.12, stone, cx - w * 0.12, 2.75, front + 0.05);
+        box(1.1, 2.3, 0.1, M(isShop ? '#1d1d1f' : '#3a0d18', { roughness: 0.4 }), cx + w * 0.3, 1.3, front + 0.03);
+        if (isShop) {
+            // ショーウィンドウのマネキン
+            [-1.2, 0, 1.2].forEach((dx, k) => {
+                const mx = cx - w * 0.12 + dx;
+                box(0.42, 0.6, 0.06, M(['#d7263d', '#2b6cb0', '#f2c230'][k]), mx, 1.75, front + 0.06).castShadow = false;
+                mesh(new THREE.SphereGeometry(0.13, 10, 8), M('#e8e2d6'), mx, 2.2, front + 0.08).castShadow = false;
+            });
+        } else {
+            // 「録音中」のランプ
+            mesh(new THREE.SphereGeometry(0.12, 10, 8), new THREE.MeshBasicMaterial({ color: '#ff2a2a' }), cx + w * 0.3, 2.65, front + 0.1).castShadow = false;
+        }
+        const label = isShop ? 'THREADS' : 'BEAT LAB';
+        const sign = mesh(new THREE.PlaneGeometry(Math.min(w * 0.7, 6.5), 1.0), new THREE.MeshStandardMaterial({ map: canvasTex(512, 80, (g, W, H) => {
+            g.fillStyle = isShop ? '#f4efe6' : '#141018'; g.fillRect(0, 0, W, H);
+            g.fillStyle = isShop ? '#1b1b1b' : '#ff4a6a'; g.font = '900 56px Arial Black, Impact'; g.textAlign = 'center'; g.fillText(label, W / 2, 62);
+        }), emissive: '#ffffff', emissiveIntensity: 0.2 }), cx, 3.75, front + 0.06);
+        sign.castShadow = false;
+        (isShop ? shopFronts : studioFronts).push({ x: cx + w * 0.3, z: front + 1.8 });
     } else {
         // 店の看板
         if (rnd() < 0.7) {
@@ -656,12 +689,71 @@ function makeNPC(colors, x, z, x0, x1) {
     if (colors.cap) { mesh(new THREE.SphereGeometry(0.155, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2), M(colors.cap), 0, 1.68, 0, g); box(0.2, 0.02, 0.15, M(colors.cap), 0, 1.69, 0.14, g); }
     else mesh(new THREE.SphereGeometry(0.155, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2.2), M(colors.hair || '#1a1410'), 0, 1.69, -0.01, g);
     g.position.set(x, 0.15, z);
-    npcs.push({ g: g, legs: legs, arms: arms, x0: x0, x1: x1, dir: rnd() < 0.5 ? 1 : -1, speed: 1.1 + rnd() * 0.6, phase: rnd() * 6, pause: 0 });
+    const n = { g: g, legs: legs, arms: arms, x0: x0, x1: x1, dir: rnd() < 0.5 ? 1 : -1, speed: 1.1 + rnd() * 0.6, phase: rnd() * 6, pause: 0, still: x0 === x1 };
+    npcs.push(n);
+    return n;
 }
 makeNPC({ skin: '#8d5a3b', top: '#c23b3b', pants: '#2c3440', cap: '#111111' }, -20, -7.6, -36, 30);
 makeNPC({ skin: '#e2b893', top: '#3a5f8f', pants: '#3b3b3b', hair: '#6b4a2b' }, 10, 7.4, -22, 36);
 makeNPC({ skin: '#5a3a28', top: '#e3c64a', pants: '#1f2a36', cap: '#7a1f9a' }, 25, -6.5, -10, 36);
 makeNPC({ skin: '#c48e6a', top: '#2f6b4a', pants: '#4a3b2c', hair: '#111111' }, -30, 6.6, -38, 4);
+
+// ---------------------------------------------------------------- 遊べる場所
+// ライバル（バスケットコートの中）
+const rival = makeNPC({ skin: '#7a4a30', top: '#1f1f22', pants: '#3a3f47', cap: '#c9302c' }, -8, 16.5, -8, -8);
+rival.face = Math.PI;
+// 韻を教えてくれるMC（壁画の前）
+const mc = makeNPC({ skin: '#d8a982', top: '#5b3e8f', pants: '#22262c', hair: '#2a2420' }, 18.5, 20.6, 18.5, 18.5);
+mc.face = Math.PI;
+// 鉄棒（筋トレ）
+(function () {
+    const x = 23.5, z = 17.5;
+    [-0.9, 0.9].forEach(dx => mesh(new THREE.CylinderGeometry(0.05, 0.05, 2.4, 8), M('#5f6368', { metalness: 0.6, roughness: 0.4 }), x + dx, 1.35, z));
+    const bar = mesh(new THREE.CylinderGeometry(0.035, 0.035, 1.9, 8), M('#9aa0a6', { metalness: 0.7, roughness: 0.3 }), x, 2.5, z);
+    bar.rotation.z = Math.PI / 2;
+    solid(x - 1, x - 0.8, z - 0.1, z + 0.1, 2.5, true); solid(x + 0.8, x + 1, z - 0.1, z + 0.1, 2.5, true);
+})();
+// ラジカセ（ダンス）
+const boombox = new THREE.Group(); boombox.position.set(11.5, 0.15, 19); scene.add(boombox);
+(function () {
+    box(0.9, 0.5, 0.28, M('#2a2a2e', { roughness: 0.4 }), 0, 0.25, 0, boombox);
+    [-0.26, 0.26].forEach(dx => { const sp = mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.02, 16), M('#8a8f96', { metalness: 0.6 }), dx, 0.25, 0.15, boombox); sp.rotation.x = Math.PI / 2; });
+    box(0.7, 0.04, 0.04, M('#b0b4ba', { metalness: 0.7 }), 0, 0.58, 0, boombox);
+    box(0.95, 0.06, 0.05, M('#2a2a2e'), 0, 0.33, 0.12, boombox).position.y = 0.4;
+    box(1.4, 0.1, 1.2, M('#3d2d22'), 0, 0.05, 0.1, boombox);   // 段ボール
+})();
+solid(10.8, 12.2, 18.6, 19.5, 0.6, true);
+
+// 吹き出しアイコン（遠くからでも見える）
+function marker(emoji, color, x, y, z) {
+    const tex = canvasTex(128, 150, (g, w, h) => {
+        g.fillStyle = color; g.strokeStyle = '#ffffff'; g.lineWidth = 8;
+        g.beginPath(); g.arc(64, 62, 52, 0, Math.PI * 2); g.fill(); g.stroke();
+        g.beginPath(); g.moveTo(48, 108); g.lineTo(64, 144); g.lineTo(80, 108); g.closePath(); g.fill();
+        g.font = '64px "Apple Color Emoji", "Segoe UI Emoji", sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+        g.fillText(emoji, 64, 66);
+    });
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
+    sp.scale.set(0.85, 1.0, 1);
+    sp.position.set(x, y, z);
+    sp.renderOrder = 10;
+    sp.userData.baseY = y;
+    scene.add(sp);
+    return sp;
+}
+
+// x,z: ボタンが出る場所 / label: ボタンの文字
+const spots = [
+    { id: 'home',    x: homeDoor.x, z: homeDoor.z, r: 2.0, label: '🏠 家に入る' },
+    { id: 'cypher',  x: -8, z: 15.2, r: 2.2, label: '🔥 サイファーを挑む', icon: '🔥', color: '#d6332b', my: 2.75, mx: -8, mz: 16.5 },
+    { id: 'food',    x: -32, z: 7.6, r: 2.6, label: '🍔 デリでごはん', icon: '🍔', color: '#1f6b3a', my: 4.6, mz: 8.6 },
+    { id: 'closet',  x: shopFronts[0].x - 1.5, z: -6.8, r: 2.6, label: '👕 THREADSで着替える', icon: '👕', color: '#3a6ea5', my: 4.7, mz: -8.4 },
+    { id: 'rhythm',  x: studioFronts[0].x, z: -7.0, r: 2.2, label: '🥁 BEAT LABで練習', icon: '🥁', color: '#a3204a', my: 4.7, mz: -8.4 },
+    { id: 'workout', x: 23.5, z: 16.4, r: 1.8, label: '💪 鉄棒で筋トレ', icon: '💪', color: '#6b6f76', my: 3.2, mz: 17.5 },
+    { id: 'dance',   x: 11.5, z: 17.8, r: 1.9, label: '🕺 ラジカセでダンス', icon: '🕺', color: '#e08a16', my: 1.9, mz: 19 },
+    { id: 'rhyme',   x: 18.5, z: 19.3, r: 2.0, label: '🎤 MCと韻踏練習', icon: '🎤', color: '#5b3e8f', my: 2.75, mx: 18.5, mz: 20.6 },
+];
+spots.forEach(s => { if (s.icon) s.marker = marker(s.icon, s.color, s.mx != null ? s.mx : s.x, s.my, s.mz != null ? s.mz : s.z); });
 
 // ---------------------------------------------------------------- プレイヤー
 const avatarRig = new THREE.Group();
@@ -1075,7 +1167,13 @@ function groundY(x, z) { return Math.abs(z) < 5 ? 0 : 0.15; }
 // ---------------------------------------------------------------- 家に入るボタン
 const actionBtn = document.getElementById('action');
 let nearHome = false;
-actionBtn.addEventListener('click', () => post({ type: 'home' }));
+let currentSpot = null;
+actionBtn.addEventListener('click', () => {
+    if (!currentSpot || busy) return;
+    post({ type: currentSpot.id === 'home' ? 'home' : 'spot', id: currentSpot.id });
+});
+// 筋トレ・ダンス中は動けない
+let busy = null;   // { type, until, start }
 function post(obj) {
     try { window.webkit.messageHandlers.city.postMessage(JSON.stringify(obj)); } catch (e) { console.log('post', obj); }
 }
@@ -1093,7 +1191,7 @@ function loop() {
     if (keys['s'] || keys['arrowdown']) iy = 1;
     if (keys['a'] || keys['arrowleft']) ix = -1;
     if (keys['d'] || keys['arrowright']) ix = 1;
-    const mag = Math.min(1, Math.hypot(ix, iy));
+    const mag = busy ? 0 : Math.min(1, Math.hypot(ix, iy));
     if (mag > 0.08) {
         const fx = -Math.sin(cam.yaw), fz = -Math.cos(cam.yaw);
         const rx = Math.cos(cam.yaw), rz = -Math.sin(cam.yaw);
@@ -1130,9 +1228,52 @@ function loop() {
         L.rightArmPivot.rotation.x += (sw * 0.8 - L.rightArmPivot.rotation.x) * ease;
     }
     avatarRig.position.y += moving ? Math.abs(Math.sin(player.walkT)) * 0.04 : Math.sin(t * 2) * 0.004;
+    if (L.leftArmPivot) { L.leftArmPivot.rotation.z *= 0.85; L.rightArmPivot.rotation.z *= 0.85; }
+    if (busy) {
+        const now = performance.now();
+        const bt = (now - busy.start) / 1000;
+        if (now > busy.until || !L.leftLegPivot) {
+            busy = null;
+        } else if (busy.type === 'workout') {
+            // 鉄棒にぶら下がって懸垂
+            const s = (1 - Math.cos(bt * 4)) / 2;
+            L.leftArmPivot.rotation.x = -3.0; L.rightArmPivot.rotation.x = -3.0;
+            L.leftLegPivot.rotation.x = -0.25; L.rightLegPivot.rotation.x = -0.15;
+            avatarRig.position.y = player.y + 0.35 + s * 0.4;
+            avatarRig.rotation.y = Math.PI;
+        } else {
+            // ダンス
+            const b = Math.sin(bt * 9);
+            L.leftArmPivot.rotation.z = -(1.5 + 0.8 * Math.sin(bt * 6));
+            L.rightArmPivot.rotation.z = 1.5 + 0.8 * Math.sin(bt * 6 + Math.PI);
+            L.leftArmPivot.rotation.x = 0; L.rightArmPivot.rotation.x = 0;
+            L.leftLegPivot.rotation.x = b * 0.45; L.rightLegPivot.rotation.x = -b * 0.45;
+            avatarRig.position.y = player.y + Math.abs(b) * 0.1;
+            player.rot += dt * 2.2;
+            avatarRig.rotation.y = player.rot;
+        }
+    }
+    // ラジカセがはねる
+    boombox.scale.y = 1 + (busy && busy.type === 'dance' ? Math.abs(Math.sin(t * 9)) * 0.08 : 0);
 
     // 歩いている人
     npcs.forEach(n => {
+        if (n.still) {
+            // その場で体をゆらす（プレイヤーが近いと向く）
+            const dx = player.x - n.g.position.x, dz = player.z - n.g.position.z;
+            const want = Math.hypot(dx, dz) < 8 ? Math.atan2(dx, dz) : n.face;
+            let df = want - n.g.rotation.y;
+            while (df > Math.PI) df -= Math.PI * 2;
+            while (df < -Math.PI) df += Math.PI * 2;
+            n.g.rotation.y += df * Math.min(1, dt * 4);
+            n.phase += dt * 4.6;
+            n.g.position.y = 0.15 + Math.abs(Math.sin(n.phase)) * 0.05;
+            n.arms[0].rotation.x = -0.4 + Math.sin(n.phase) * 0.25;
+            n.arms[1].rotation.x = -0.9 + Math.sin(n.phase * 2) * 0.35;
+            const d = Math.hypot(dx, dz);
+            if (d < 0.6 && d > 0.001) { player.x = n.g.position.x + dx / d * 0.6; player.z = n.g.position.z + dz / d * 0.6; }
+            return;
+        }
         if (n.pause > 0) { n.pause -= dt; n.legs.forEach(l => l.rotation.x *= 0.9); return; }
         n.g.position.x += n.dir * n.speed * dt;
         if (n.g.position.x > n.x1) { n.dir = -1; n.pause = 1 + rnd() * 2; }
@@ -1165,8 +1306,19 @@ function loop() {
     if (homeDoor) {
         homeDoor.arrow.position.y = 4.6 + Math.sin(t * 3) * 0.15;
         homeDoor.arrow.rotation.y += dt * 1.5;
-        const near = Math.hypot(player.x - homeDoor.x, player.z - homeDoor.z) < 2.0;
-        if (near !== nearHome) { nearHome = near; actionBtn.classList.toggle('show', near); }
+    }
+    let best = null, bestD = 1e9;
+    spots.forEach(s => {
+        const d = Math.hypot(player.x - s.x, player.z - s.z);
+        if (d < s.r && d < bestD) { best = s; bestD = d; }
+        if (s.marker) s.marker.position.y = s.marker.userData.baseY + Math.sin(t * 2.5 + s.x) * 0.12;
+    });
+    if (busy) best = null;
+    if (best !== currentSpot) {
+        currentSpot = best;
+        nearHome = !!best && best.id === 'home';
+        if (best) actionBtn.textContent = best.label;
+        actionBtn.classList.toggle('show', !!best);
     }
 
     // 影をプレイヤーのまわりに
@@ -1185,13 +1337,27 @@ window.addEventListener('resize', () => {
 
 // ---------------------------------------------------------------- アプリとの連携
 window.city = {
+    // 筋トレ・ダンスの動き
+    doAction(type, seconds) {
+        const now = performance.now();
+        if (type === 'workout') {
+            // 鉄棒の下に移動
+            player.x = 23.5; player.z = 17.5; player.rot = Math.PI; cam.yaw = Math.PI; cam.pitch = 0.3;
+        }
+        busy = { type: type, start: now, until: now + (seconds || 4) * 1000 };
+    },
+    toast(text) {
+        const el = document.getElementById('toast');
+        el.textContent = text; el.classList.add('show');
+        clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('show'), 2600);
+    },
     setLook(look) {
         buildHuman(look);
         currentScale = look.scale || 1;
         avatarRig.scale.setScalar(currentScale);
     },
     // テスト用
-    debug() { return { camD: camera.position.distanceTo(cam.target), x: player.x, z: player.z, near: nearHome, colliders: colliders.length, calls: renderer.info.render.calls }; },
+    debug() { return { spot: currentSpot && currentSpot.id, busy: !!busy, camD: camera.position.distanceTo(cam.target), x: player.x, z: player.z, near: nearHome, colliders: colliders.length, calls: renderer.info.render.calls }; },
     teleport(x, z) { player.x = x; player.z = z; },
     setCam(d, p, y) { cam.dist = d; cam.pitch = p; cam.yaw = y; }
 };

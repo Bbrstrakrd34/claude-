@@ -9,6 +9,11 @@ struct CityView: View {
     @EnvironmentObject var game: GameState
     @Environment(\.dismiss) private var dismiss
     @StateObject private var controller = CityController()
+    @State private var showFood = false
+    @State private var showCloset = false
+    @State private var showRhyme = false
+    @State private var showRhythm = false
+    @State private var showCypher = false
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -31,7 +36,44 @@ struct CityView: View {
         .onAppear {
             let close = dismiss
             controller.onHome = { close() }
-            controller.run("city.setLook(\(Room3DView.lookJSON(game.data.appearance, stage: game.stage)))")
+            controller.onSpot = { id in openSpot(id) }
+            sendLook()
+        }
+        // 「成長+2」などのお知らせを街の画面に出す
+        .onChange(of: game.message) { _, new in
+            controller.run("city.toast(\(CityController.json(new)))")
+        }
+        .sheet(isPresented: $showFood) { FoodView().environmentObject(game) }
+        .sheet(isPresented: $showCloset, onDismiss: sendLook) { ClosetView().environmentObject(game) }
+        .sheet(isPresented: $showRhyme) { RhymeGameView().environmentObject(game) }
+        .fullScreenCover(isPresented: $showRhythm) { RhythmGameView().environmentObject(game) }
+        .fullScreenCover(isPresented: $showCypher) { CypherView().environmentObject(game) }
+    }
+
+    private func sendLook() {
+        controller.run("city.setLook(\(Room3DView.lookJSON(game.data.appearance, stage: game.stage)))")
+    }
+
+    /// 街のアイコンのところでボタンが押された
+    private func openSpot(_ id: String) {
+        switch id {
+        case "food": showFood = true
+        case "closet": showCloset = true
+        case "rhyme": showRhyme = true
+        case "rhythm": showRhythm = true
+        case "cypher":
+            if game.stage < .kid {
+                controller.run("city.toast(\(CityController.json("サイファーは3歳になってから！")))")
+            } else {
+                showCypher = true
+            }
+        case "workout", "dance":
+            let before = game.data.growth
+            game.exercise(id == "workout" ? .workout : .dance)
+            if game.data.growth > before {
+                controller.run("city.doAction('\(id)', 4)")
+            }
+        default: break
         }
     }
 }
@@ -65,9 +107,11 @@ final class CityController: NSObject, ObservableObject, WKNavigationDelegate, WK
     private var loaded = false
     private var queue: [String] = []
     var onHome: (() -> Void)?
+    var onSpot: ((String) -> Void)?
 
     private struct Message: Decodable {
         let type: String
+        let id: String?
     }
 
     func run(_ js: String) {
@@ -90,6 +134,15 @@ final class CityController: NSObject, ObservableObject, WKNavigationDelegate, WK
         guard let text = message.body as? String,
               let data = text.data(using: .utf8),
               let msg = try? JSONDecoder().decode(Message.self, from: data) else { return }
-        if msg.type == "home" { onHome?() }
+        switch msg.type {
+        case "home": onHome?()
+        case "spot": if let id = msg.id { onSpot?(id) }
+        default: break
+        }
+    }
+
+    static func json<T: Encodable>(_ v: T) -> String {
+        guard let d = try? JSONEncoder().encode(v), let s = String(data: d, encoding: .utf8) else { return "null" }
+        return s
     }
 }
